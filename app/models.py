@@ -44,6 +44,12 @@ class DrivePlayNormalizePayload(BaseModel):
     payload: Any
 
 
+class QuarkQRCheckPayload(BaseModel):
+    token: str
+    name: str = "Quark"
+    saveAccount: bool = True
+
+
 class DriveSharePayload(BaseModel):
     shareURL: str
 

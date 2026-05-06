@@ -206,6 +206,7 @@ TVBox:
 
       <form class="card" method="post" action="/admin/drive-accounts">
         <h3>添加网盘账号</h3>
+        <p class="muted">Quark 推荐使用扫码授权接口：先调用 <code>POST /api/drive/quark/auth/qr/start</code> 获取二维码地址，扫码后调用 <code>POST /api/drive/quark/auth/qr/check</code> 保存账号。</p>
         <label>名称</label>
         <input name="name" placeholder="Quark 主账号" required />
         <label>类型</label>
@@ -262,6 +263,8 @@ GET  /api/runtime/source/{sourceId}/play?flag=&playId=
 GET  /api/drive/quark/status
 GET  /api/drive/providers
 GET  /api/drive/{provider}/status
+POST /api/drive/quark/auth/qr/start
+POST /api/drive/quark/auth/qr/check
 POST /api/drive/quark/normalize-play
 POST /api/drive/share/parse
 POST /api/drive/{provider}/share/parse

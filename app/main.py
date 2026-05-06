@@ -28,6 +28,7 @@ from .models import (
     DriveFileListPayload,
     DrivePlayNormalizePayload,
     DrivePlayPayload,
+    QuarkQRCheckPayload,
     DriveSharePayload,
     DriveVideosPayload,
     QuarkFileListPayload,
@@ -37,7 +38,15 @@ from .models import (
     SourcePayload,
     SubscriptionPayload,
 )
-from .quark import QuarkAuthRequired, QuarkClient, QuarkNativeError, quark_has_mobile_auth
+from .quark import (
+    QuarkAuthRequired,
+    QuarkClient,
+    QuarkNativeError,
+    quark_cookie_from_service_ticket,
+    quark_has_mobile_auth,
+    quark_qr_check,
+    quark_qr_start,
+)
 from .runtime import execute_source
 
 app = FastAPI(title="Colvins Source Service", version="0.1.0")
@@ -528,6 +537,49 @@ def check_drive_account(account_id: int):
         )
         updated = conn.execute("SELECT * FROM drive_accounts WHERE id = ?", (account_id,)).fetchone()
         return row_to_drive_account(updated)
+
+
+@app.post("/api/drive/quark/auth/qr/start")
+def start_quark_qr_auth():
+    try:
+        return quark_qr_start()
+    except QuarkNativeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@app.post("/api/drive/quark/auth/qr/check")
+def check_quark_qr_auth(payload: QuarkQRCheckPayload):
+    try:
+        status = quark_qr_check(payload.token)
+        if not status.get("ready"):
+            return status
+        cookie = quark_cookie_from_service_ticket(status["serviceTicket"])
+    except QuarkNativeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    result = {
+        "ready": True,
+        "hasCookie": bool(cookie),
+        "mobileAuthReady": quark_has_mobile_auth(cookie),
+    }
+    if payload.saveAccount:
+        with get_conn() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO drive_accounts (name, provider, enabled, sort_order, cookie, token, user_agent, notes, status)
+                VALUES (?, 'quark', 1, 0, ?, '', ?, ?, ?)
+                """,
+                (
+                    payload.name or "Quark",
+                    cookie,
+                    "",
+                    "Created by Quark QR auth.",
+                    "configured-mobile" if quark_has_mobile_auth(cookie) else "configured",
+                ),
+            )
+            row = conn.execute("SELECT * FROM drive_accounts WHERE id = ?", (cur.lastrowid,)).fetchone()
+            result["account"] = row_to_drive_account(row)
+    return result
 
 
 @app.get("/api/admin/settings")

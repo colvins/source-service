@@ -4,10 +4,12 @@ import json
 import random
 import re
 import time
+import uuid
 from typing import Any
+from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 
 class QuarkNativeError(RuntimeError):
@@ -39,6 +41,68 @@ def quark_cookie_mobile_params(cookie: str) -> dict[str, str]:
 def quark_has_mobile_auth(cookie: str) -> bool:
     params = quark_cookie_mobile_params(cookie)
     return all(params.get(key) for key in ("kps", "sign", "vcode"))
+
+
+def quark_qr_start() -> dict[str, str]:
+    request_id = str(uuid.uuid4())
+    url = "https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?" + urlencode(
+        {"client_id": "532", "v": "1.2", "request_id": request_id}
+    )
+    request = Request(url, headers={"User-Agent": DEFAULT_UA, "Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except (HTTPError, URLError, json.JSONDecodeError) as error:
+        raise QuarkNativeError(f"Quark QR start failed: {error}") from error
+    token = (((payload.get("data") or {}).get("members") or {}).get("token") or "").strip()
+    if payload.get("status") != 2000000 or not token:
+        raise QuarkNativeError(payload.get("message") or "Quark QR token is empty.")
+    qr_url = "https://su.quark.cn/4_eMHBJ?" + urlencode(
+        {
+            "token": token,
+            "client_id": "532",
+            "ssb": "weblogin",
+            "uc_param_str": "",
+            "uc_biz_str": "S:custom|OPT:SAREA@0|OPT:IMMERSIVE@1|OPT:BACK_BTN_STYLE@0",
+        }
+    )
+    return {"token": token, "qrURL": qr_url}
+
+
+def quark_qr_check(token: str) -> dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    url = "https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?" + urlencode(
+        {"client_id": "532", "v": "1.2", "token": token, "request_id": request_id}
+    )
+    request = Request(url, headers={"User-Agent": DEFAULT_UA, "Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except (HTTPError, URLError, json.JSONDecodeError) as error:
+        raise QuarkNativeError(f"Quark QR check failed: {error}") from error
+    ticket = (((payload.get("data") or {}).get("members") or {}).get("service_ticket") or "").strip()
+    if payload.get("status") == 2000000 and ticket:
+        return {"ready": True, "serviceTicket": ticket, "rawStatus": payload.get("status")}
+    return {"ready": False, "rawStatus": payload.get("status"), "message": payload.get("message", "waiting")}
+
+
+def quark_cookie_from_service_ticket(service_ticket: str) -> str:
+    jar = CookieJar()
+    opener = build_opener(HTTPCookieProcessor(jar))
+    url = "https://pan.quark.cn/account/info?" + urlencode({"st": service_ticket, "lw": "scan"})
+    request = Request(url, headers={"User-Agent": DEFAULT_UA, "Accept": "application/json"})
+    try:
+        opener.open(request, timeout=20).read()
+    except (HTTPError, URLError) as error:
+        raise QuarkNativeError(f"Quark account info failed: {error}") from error
+    cookies = [
+        f"{cookie.name}={cookie.value}"
+        for cookie in jar
+        if cookie.domain and "quark.cn" in cookie.domain
+    ]
+    if not cookies:
+        raise QuarkNativeError("Quark login did not return cookies.")
+    return "; ".join(cookies)
 
 
 class QuarkClient:
