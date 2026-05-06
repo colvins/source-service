@@ -380,8 +380,33 @@ def _normalize_vod_play_sources(payload: Any) -> Any:
     return normalized
 
 
+def _normalize_play_result(payload: Any) -> Any:
+    if isinstance(payload, list):
+        return [_normalize_play_result(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized = {key: _normalize_play_result(value) for key, value in payload.items()}
+    urls = normalized.get("urls")
+    if isinstance(urls, list) and urls and not normalized.get("url"):
+        first = next((item for item in urls if isinstance(item, dict) and item.get("url")), None)
+        if first:
+            normalized["url"] = first.get("url")
+            if not normalized.get("header") and isinstance(first.get("header"), dict):
+                normalized["header"] = first.get("header")
+            if not normalized.get("headers") and isinstance(first.get("headers"), dict):
+                normalized["headers"] = first.get("headers")
+    if normalized.get("url") and "proxyStreaming" not in normalized:
+        normalized["proxyStreaming"] = False
+    return normalized
+
+
+def _normalize_runtime_payload(payload: Any) -> Any:
+    return _normalize_play_result(_normalize_vod_play_sources(payload))
+
+
 def _runtime_envelope(payload: dict[str, Any]) -> JSONResponse:
-    payload = _normalize_vod_play_sources(payload)
+    payload = _normalize_runtime_payload(payload)
     if isinstance(payload, dict) and "data" in payload:
         return JSONResponse(payload)
     return JSONResponse({"data": payload})
@@ -389,7 +414,7 @@ def _runtime_envelope(payload: dict[str, Any]) -> JSONResponse:
 
 def _runtime_raw(source_id: int, action: str, params: dict[str, Any], request: Request) -> JSONResponse:
     with get_conn() as conn:
-        return JSONResponse(_normalize_vod_play_sources(execute_source(conn, source_id, action, params, _base_url_from_request(request))))
+        return JSONResponse(_normalize_runtime_payload(execute_source(conn, source_id, action, params, _base_url_from_request(request))))
 
 
 @app.get("/health")
