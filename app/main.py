@@ -345,7 +345,43 @@ def subscription_urls(subscription: dict[str, Any], base_url: str) -> dict[str, 
     }
 
 
+def _normalize_vod_play_sources(payload: Any) -> Any:
+    if isinstance(payload, list):
+        return [_normalize_vod_play_sources(item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+
+    normalized = {key: _normalize_vod_play_sources(value) for key, value in payload.items()}
+    sources = normalized.get("vod_play_sources")
+    if isinstance(sources, list) and sources and not normalized.get("vod_play_from") and not normalized.get("vod_play_url"):
+        flags: list[str] = []
+        groups: list[str] = []
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            name = str(source.get("name") or source.get("flag") or "").strip()
+            episodes = source.get("episodes")
+            if not name or not isinstance(episodes, list):
+                continue
+            encoded_episodes: list[str] = []
+            for episode in episodes:
+                if not isinstance(episode, dict):
+                    continue
+                episode_name = str(episode.get("name") or episode.get("title") or "").strip()
+                play_id = str(episode.get("playId") or episode.get("id") or episode.get("url") or "").strip()
+                if episode_name and play_id:
+                    encoded_episodes.append(f"{episode_name}${play_id}")
+            if encoded_episodes:
+                flags.append(name)
+                groups.append("#".join(encoded_episodes))
+        if flags and groups:
+            normalized["vod_play_from"] = "$$$".join(flags)
+            normalized["vod_play_url"] = "$$$".join(groups)
+    return normalized
+
+
 def _runtime_envelope(payload: dict[str, Any]) -> JSONResponse:
+    payload = _normalize_vod_play_sources(payload)
     if isinstance(payload, dict) and "data" in payload:
         return JSONResponse(payload)
     return JSONResponse({"data": payload})
@@ -353,7 +389,7 @@ def _runtime_envelope(payload: dict[str, Any]) -> JSONResponse:
 
 def _runtime_raw(source_id: int, action: str, params: dict[str, Any], request: Request) -> JSONResponse:
     with get_conn() as conn:
-        return JSONResponse(execute_source(conn, source_id, action, params, _base_url_from_request(request)))
+        return JSONResponse(_normalize_vod_play_sources(execute_source(conn, source_id, action, params, _base_url_from_request(request))))
 
 
 @app.get("/health")
