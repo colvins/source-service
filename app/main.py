@@ -113,6 +113,130 @@ def drive_bridge_enabled() -> bool:
     return bool(row and row["value"] == "omnibox-fallback")
 
 
+def _quark_payload_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = ((payload.get("data") or {}).get("list") or [])
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _quark_find_child(client: QuarkClient, parent_fid: str, name: str) -> dict[str, Any] | None:
+    target = (name or "").strip()
+    if not target:
+        return None
+    for item in _quark_payload_items(client.list_files(parent_fid)):
+        if str(item.get("file_name") or item.get("name") or "").strip() == target:
+            return item
+    return None
+
+
+def _quark_saved_fids_from_task(client: QuarkClient, save: dict[str, Any]) -> list[str]:
+    task_id = (save.get("data") or {}).get("task_id")
+    if not task_id:
+        raise QuarkNativeError("Quark save task id is empty.")
+    task = client.wait_task(str(task_id))
+    saved_fids = (((task.get("data") or {}).get("save_as") or {}).get("save_as_top_fids") or [])
+    if not saved_fids:
+        raise QuarkNativeError("Quark save task did not return saved file ids.")
+    return [str(fid) for fid in saved_fids]
+
+
+def _quark_play_candidates_for_saved_fid(client: QuarkClient, saved_fid: str, fallback_name: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    video_play, headers = client.video_play_urls(saved_fid)
+    raw_candidates: list[dict[str, Any]] = []
+    video_data = video_play.get("data") or {}
+    video_items = video_data.get("video_list") or video_data.get("videoList") or []
+    for item in video_items:
+        if isinstance(item, dict):
+            video_info = item.get("video_info") if isinstance(item.get("video_info"), dict) else {}
+            raw_candidates.append(
+                {
+                    "name": item.get("quality") or item.get("resolution") or item.get("format") or fallback_name or "transcoded",
+                    "url": item.get("url") or video_info.get("url") or "",
+                    "header": headers,
+                }
+            )
+    download, download_headers = client.download_urls([saved_fid])
+    for item in download.get("data") or []:
+        if isinstance(item, dict):
+            raw_candidates.append(
+                {
+                    "name": "RAW",
+                    "url": item.get("download_url") or item.get("url") or "",
+                    "header": download_headers,
+                }
+            )
+    return raw_candidates, headers, video_play
+
+
+def _quark_cached_saved_fid(provider: str, share_id: str, share_fid: str, file_path: str) -> str:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT saved_fid
+            FROM drive_file_cache
+            WHERE provider = ? AND share_id = ? AND share_fid = ? AND file_path = ?
+            """,
+            (provider, share_id, share_fid, file_path or ""),
+        ).fetchone()
+    return str(row["saved_fid"]) if row else ""
+
+
+def _quark_store_saved_fid(provider: str, share_id: str, share_fid: str, file_path: str, saved_fid: str, save_mode: str) -> None:
+    if not saved_fid:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO drive_file_cache (provider, share_id, share_fid, file_path, saved_fid, save_mode)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider, share_id, share_fid, file_path)
+            DO UPDATE SET saved_fid = excluded.saved_fid,
+                          save_mode = excluded.save_mode,
+                          updated_at = CURRENT_TIMESTAMP
+            """,
+            (provider, share_id, share_fid, file_path or "", saved_fid, save_mode),
+        )
+
+
+def _quark_save_ancestor_and_resolve_fid(
+    client: QuarkClient,
+    share_id: str,
+    stoken: str,
+    file_path: str,
+) -> tuple[str, dict[str, Any]]:
+    path_parts = [part for part in (file_path or "").split("/") if part]
+    if len(path_parts) < 2:
+        raise QuarkNativeError("Nested Quark fallback requires filePath from the share file list.")
+
+    root_name = path_parts[0]
+    root_item = next(
+        (
+            item
+            for item in _quark_payload_items(client.list_share_files(share_id, stoken, "0"))
+            if str(item.get("file_name") or "").strip() == root_name
+        ),
+        None,
+    )
+    if root_item is None:
+        raise QuarkNativeError(f"Quark share root item not found: {root_name}")
+
+    save = client.save_share_file(
+        share_id,
+        stoken,
+        str(root_item.get("fid") or ""),
+        str(root_item.get("share_fid_token") or ""),
+        "0",
+        "0",
+    )
+    saved_fid = _quark_saved_fids_from_task(client, save)[0]
+    current_fid = saved_fid
+    for part in path_parts[1:]:
+        child = _quark_find_child(client, current_fid, part)
+        if child is None:
+            raise QuarkNativeError(f"Saved Quark child not found: {part}")
+        current_fid = str(child.get("fid") or "")
+    return current_fid, save
+
+
 def ensure_subscription_token(conn: sqlite3.Connection, subscription_id: int) -> str:
     row = conn.execute("SELECT token FROM subscriptions WHERE id = ?", (subscription_id,)).fetchone()
     if not row:
@@ -827,66 +951,61 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                 }
             try:
                 stoken = client.share_token(parsed["shareId"], parsed.get("password", ""))
-                save = client.save_share_file(
-                    parsed["shareId"],
-                    stoken,
-                    payload.fid,
-                    payload.shareFidToken,
-                    "0",
-                    payload.pdirFid,
+                save_mode = "file"
+                cached_fid = _quark_cached_saved_fid(provider, parsed["shareId"], payload.fid, payload.filePath)
+                cached_error = ""
+                if cached_fid:
+                    try:
+                        raw_candidates, headers, video_play = _quark_play_candidates_for_saved_fid(
+                            client,
+                            cached_fid,
+                            payload.flag,
+                        )
+                        return {
+                            "provider": provider,
+                            "mode": "native",
+                            "share": {**parsed, "stokenReady": True},
+                            "saveMode": "cached",
+                            "savedFid": cached_fid,
+                            "raw": {"urls": raw_candidates, "header": headers},
+                            "play": normalize_quark_play_payload({"urls": raw_candidates, "header": headers}),
+                        }
+                    except QuarkNativeError as error:
+                        cached_error = str(error)[:240]
+                try:
+                    save = client.save_share_file(
+                        parsed["shareId"],
+                        stoken,
+                        payload.fid,
+                        payload.shareFidToken,
+                        "0",
+                        payload.pdirFid,
+                    )
+                    saved_fid = _quark_saved_fids_from_task(client, save)[0]
+                except QuarkNativeError as direct_save_error:
+                    save_mode = "ancestor"
+                    saved_fid, save = _quark_save_ancestor_and_resolve_fid(
+                        client,
+                        parsed["shareId"],
+                        stoken,
+                        payload.filePath,
+                    )
+                    save["directSaveError"] = str(direct_save_error)[:240]
+                if cached_error:
+                    save["cachedPlayError"] = cached_error
+                raw_candidates, headers, video_play = _quark_play_candidates_for_saved_fid(
+                    client,
+                    saved_fid,
+                    payload.flag,
                 )
-                task_id = (save.get("data") or {}).get("task_id")
-                if not task_id:
-                    return {
-                        "provider": provider,
-                        "mode": "native",
-                        "share": {**parsed, "stokenReady": True},
-                        "ready": False,
-                        "save": save,
-                        "message": "Quark save task id is empty.",
-                    }
-                task = client.wait_task(str(task_id))
-                saved_fids = (((task.get("data") or {}).get("save_as") or {}).get("save_as_top_fids") or [])
-                if not saved_fids:
-                    return {
-                        "provider": provider,
-                        "mode": "native",
-                        "share": {**parsed, "stokenReady": True},
-                        "ready": False,
-                        "save": save,
-                        "task": task,
-                        "message": "Quark save task did not return saved file ids.",
-                    }
-                saved_fid = str(saved_fids[0])
-                video_play, headers = client.video_play_urls(saved_fid)
-                raw_candidates = []
-                video_data = video_play.get("data") or {}
-                video_items = video_data.get("video_list") or video_data.get("videoList") or []
-                for item in video_items:
-                    if isinstance(item, dict):
-                        raw_candidates.append(
-                            {
-                                "name": item.get("quality") or item.get("resolution") or item.get("format") or "transcoded",
-                                "url": item.get("url") or "",
-                                "header": headers,
-                            }
-                        )
-                download, download_headers = client.download_urls([saved_fid])
-                for item in download.get("data") or []:
-                    if isinstance(item, dict):
-                        raw_candidates.append(
-                            {
-                                "name": "RAW",
-                                "url": item.get("download_url") or item.get("url") or "",
-                                "header": download_headers,
-                            }
-                        )
+                _quark_store_saved_fid(provider, parsed["shareId"], payload.fid, payload.filePath, saved_fid, save_mode)
                 return {
                     "provider": provider,
                     "mode": "native",
                     "share": {**parsed, "stokenReady": True},
+                    "saveMode": save_mode,
+                    "savedFid": saved_fid,
                     "save": save,
-                    "task": task,
                     "videoPlay": video_play,
                     "raw": {"urls": raw_candidates, "header": headers},
                     "play": normalize_quark_play_payload({"urls": raw_candidates, "header": headers}),
@@ -1050,6 +1169,7 @@ def drive_share_play_best(provider: str, payload: DriveVideosPayload):
         shareURL=payload.shareURL,
         fid=best_file["fid"],
         flag=best_file["name"],
+        filePath=best_file.get("path", ""),
         shareFidToken=best_file.get("shareFidToken", ""),
         pdirFid=best_file.get("parentFid", "0"),
         getTranscodeUrls=True,

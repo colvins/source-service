@@ -267,6 +267,33 @@ class QuarkClient:
         last.setdefault("data", {})["list"] = merged
         return last
 
+    def list_files(self, pdir_fid: str = "0") -> dict[str, Any]:
+        merged: list[dict[str, Any]] = []
+        page = 1
+        last: dict[str, Any] = {}
+        while True:
+            last = self._request(
+                "GET",
+                "file/sort",
+                params={
+                    "pdir_fid": pdir_fid or "0",
+                    "_page": page,
+                    "_size": 100,
+                    "_sort": "file_type:asc,updated_at:desc",
+                },
+            )
+            data = last.get("data") or {}
+            items = data.get("list") or []
+            if not items:
+                break
+            merged.extend(item for item in items if isinstance(item, dict))
+            total = (last.get("metadata") or {}).get("_total") or data.get("total") or len(merged)
+            if len(merged) >= int(total):
+                break
+            page += 1
+        last.setdefault("data", {})["list"] = merged
+        return last
+
     def save_share_file(
         self,
         pwd_id: str,

@@ -95,6 +95,18 @@ def init_db() -> None:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS drive_file_cache (
+                provider TEXT NOT NULL,
+                share_id TEXT NOT NULL,
+                share_fid TEXT NOT NULL,
+                file_path TEXT NOT NULL DEFAULT '',
+                saved_fid TEXT NOT NULL,
+                save_mode TEXT NOT NULL DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (provider, share_id, share_fid, file_path)
+            );
             """
         )
         seed_defaults(conn)
@@ -109,7 +121,7 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
         "danmu_api_url": "",
         "iptv_filter_rules": "",
         "drive_default_provider": "quark",
-        "drive_quality_priority": "4k,super,high,1080,720,low,raw",
+        "drive_quality_priority": "raw,original,原画,原码,4k,super,high,1080,720,low",
         "drive_bridge_mode": "disabled",
     }
     for key, value in default_settings.items():

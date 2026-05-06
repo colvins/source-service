@@ -74,6 +74,10 @@ class DriveBridgeError(RuntimeError):
 
 
 QUALITY_PRIORITY = (
+    "raw",
+    "original",
+    "原画",
+    "原码",
     "4k",
     "uhd",
     "super",
@@ -82,7 +86,6 @@ QUALITY_PRIORITY = (
     "high",
     "720",
     "low",
-    "raw",
 )
 
 VIDEO_EXTENSIONS = (
