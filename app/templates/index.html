@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Colvins Source Service</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#111318; color:#f5f7fa; margin:0; }
+    .wrap { max-width: 1200px; margin:0 auto; padding:32px 20px 60px; }
+    h1,h2 { margin:0 0 12px; }
+    .muted { color:#9ca3af; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap:16px; margin-top:20px; }
+    .card { background:#1a1f29; border:1px solid #2b3342; border-radius:18px; padding:18px; }
+    pre { background:#0d1117; color:#d7e6ff; border-radius:10px; padding:14px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+    ul { padding-left:18px; }
+    a { color:#6ab4ff; text-decoration:none; }
+    .pill { display:inline-block; margin:0 8px 8px 0; padding:6px 10px; border-radius:999px; background:#253041; color:#d9e6ff; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>{{ settings.get('service_name', 'Colvins Source Service') }}</h1>
+    <p class="muted">v0.1.0 scaffold · 独立 Docker 项目 · 先提供源管理、订阅管理、导出接口和后台入口。</p>
+
+    <div class="grid">
+      <section class="card">
+        <h2>当前设置</h2>
+        <ul>
+          {% for key, value in settings.items() %}
+          <li><strong>{{ key }}</strong>: {{ value }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Sources</h2>
+        <div>
+          {% for source in sources %}
+          <span class="pill">#{{ source.id }} {{ source.name }} · {{ source.runtimeType }}</span>
+          {% else %}
+          <p class="muted">暂无 source。</p>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Subscriptions</h2>
+        <div>
+          {% for sub in subscriptions %}
+          <div style="margin-bottom:14px;">
+            <strong>#{{ sub.id }} {{ sub.name }}</strong><br />
+            <span class="muted">token: {{ sub.token }}</span><br />
+            <a href="/api/export/{{ sub.id }}/catpaw/config">CatPaw Config</a>
+            ·
+            <a href="/api/export/{{ sub.id }}/tvbox?token={{ sub.token }}">TVBox Config</a>
+          </div>
+          {% else %}
+          <p class="muted">暂无订阅。</p>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>内置模板</h2>
+        <ul>
+          {% for tpl in templates %}
+          <li>{{ tpl['name'] }} · {{ tpl['runtime_type'] }} · {{ tpl['description'] }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:16px;">
+      <h2>当前已开放接口</h2>
+      <pre>GET  /health
+GET  /api/admin/sources
+POST /api/admin/sources
+PUT  /api/admin/sources/{id}
+DELETE /api/admin/sources/{id}
+GET  /api/admin/templates
+GET  /api/admin/subscriptions
+POST /api/admin/subscriptions
+PUT  /api/admin/subscriptions/{id}
+DELETE /api/admin/subscriptions/{id}
+GET  /api/admin/settings
+PUT  /api/admin/settings/{key}
+GET  /api/export/{subscriptionId}/catpaw/config
+GET  /api/export/{subscriptionId}/catpaw/index.js.md5
+GET  /api/export/{subscriptionId}/tvbox?token=...
+GET  /api/runtime/source/{sourceId}</pre>
+    </section>
+  </div>
+</body>
+</html>

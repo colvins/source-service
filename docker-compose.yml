@@ -1,0 +1,13 @@
+services:
+  colvins-source-service:
+    build: .
+    container_name: colvins-source-service
+    restart: unless-stopped
+    ports:
+      - "0.0.0.0:8788:8788"
+    environment:
+      # Temporary compatibility bridge while Colvins drive modules are being built.
+      # The app still receives direct final URLs + headers; media bytes are not proxied here.
+      OMNIBOX_API_URL: "${OMNIBOX_API_URL:-}"
+    volumes:
+      - ./data:/app/data
