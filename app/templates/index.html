@@ -170,10 +170,15 @@
         <div>
           <strong>#{{ sub.id }} {{ sub.name }}</strong><br />
           <span class="muted">{{ sub.sources|length }} 个 source · token 已生成</span><br />
-          <a href="/api/export/{{ sub.id }}/catpaw/index.js.md5">index.js.md5</a>
-          · <a href="/api/export/{{ sub.id }}/catpaw/index.js">index.js</a>
-          · <a href="/api/export/{{ sub.id }}/catpaw/config">config</a>
-          · <a href="/api/export/{{ sub.id }}/tvbox?token={{ sub.token }}">TVBox</a>
+          <a href="{{ sub.urls.catpawMd5 }}">index.js.md5</a>
+          · <a href="{{ sub.urls.catpawIndex }}">index.js</a>
+          · <a href="{{ sub.urls.catpawConfig }}">config</a>
+          · <a href="{{ sub.urls.tvbox }}">TVBox</a>
+          <pre>CatPaw/Open:
+{{ sub.urls.catpawMd5 }}
+
+TVBox:
+{{ sub.urls.tvbox }}</pre>
         </div>
         <span class="pill {{ 'green' if sub.enabled else 'orange' }}">{{ '启用' if sub.enabled else '停用' }}</span>
       </div>
@@ -231,7 +236,11 @@ GET  /api/runtime/source/{sourceId}/detail?videoId=
 GET  /api/runtime/source/{sourceId}/play?flag=&playId=
 
 GET  /api/drive/quark/status
-POST /api/drive/quark/normalize-play</pre>
+POST /api/drive/quark/normalize-play
+POST /api/drive/quark/share/parse
+POST /api/drive/quark/share/info
+POST /api/drive/quark/share/files
+POST /api/drive/quark/share/play</pre>
     </section>
 
     <section id="settings" class="section card">

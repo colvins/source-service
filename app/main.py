@@ -11,8 +11,17 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, row_to_drive_account, row_to_source, row_to_subscription
-from .drive import best_direct_candidate, extract_play_candidates, rank_play_candidates
-from .models import DriveAccountPayload, DrivePlayNormalizePayload, SettingPayload, SourcePayload, SubscriptionPayload
+from .drive import call_omnibox_drive_bridge, normalize_quark_play_payload, parse_quark_share_url
+from .models import (
+    DriveAccountPayload,
+    DrivePlayNormalizePayload,
+    QuarkFileListPayload,
+    QuarkPlayPayload,
+    QuarkSharePayload,
+    SettingPayload,
+    SourcePayload,
+    SubscriptionPayload,
+)
 from .runtime import execute_source
 
 app = FastAPI(title="Colvins Source Service", version="0.1.0")
@@ -151,6 +160,18 @@ def _subscription_and_base_url(subscription_id: int) -> tuple[dict[str, Any], st
         return subscription, settings.get("service_base_url", "http://127.0.0.1:8788").rstrip("/")
 
 
+def subscription_urls(subscription: dict[str, Any], base_url: str) -> dict[str, str]:
+    token = subscription["token"]
+    subscription_id = subscription["id"]
+    return {
+        "catpawMd5": f"{base_url}/api/subscription/{subscription_id}/catvod/index.js.md5",
+        "catpawIndex": f"{base_url}/api/subscription/{subscription_id}/catvod/index.js",
+        "catpawConfig": f"{base_url}/api/subscription/{subscription_id}/catvod/config",
+        "tvbox": f"{base_url}/api/subscription/{subscription_id}/tvbox?token={token}",
+        "tvboxExport": f"{base_url}/api/export/{subscription_id}/tvbox?token={token}",
+    }
+
+
 def _runtime_envelope(payload: dict[str, Any]) -> JSONResponse:
     if isinstance(payload, dict) and "data" in payload:
         return JSONResponse(payload)
@@ -176,6 +197,11 @@ def dashboard(request: Request):
         }
         sources = fetch_sources(conn)
         subscriptions = fetch_subscriptions(conn)
+        for subscription in subscriptions:
+            subscription["urls"] = subscription_urls(
+                subscription,
+                settings.get("service_base_url", "http://127.0.0.1:8788").rstrip("/"),
+            )
         drive_accounts = fetch_drive_accounts(conn)
         templates_data = conn.execute("SELECT * FROM source_templates ORDER BY id ASC").fetchall()
         templates_payload = [dict(row) for row in templates_data]
@@ -494,27 +520,84 @@ def quark_drive_status():
 
 @app.post("/api/drive/quark/normalize-play")
 def quark_normalize_play(payload: DrivePlayNormalizePayload):
-    candidates = extract_play_candidates(payload.payload)
-    ranked = rank_play_candidates(candidates)
-    best = best_direct_candidate(payload.payload)
-    return {
-        "candidateCount": len(candidates),
-        "directCandidateCount": len(ranked),
-        "selected": None if best is None else {
-            "name": best.name,
-            "url": best.url,
-            "host": best.host,
-            "headerKeys": sorted(best.headers.keys()),
+    return normalize_quark_play_payload(payload.payload)
+
+
+@app.post("/api/drive/quark/share/parse")
+def quark_parse_share(payload: QuarkSharePayload):
+    return parse_quark_share_url(payload.shareURL)
+
+
+@app.post("/api/drive/quark/share/info")
+def quark_share_info(payload: QuarkSharePayload):
+    parsed = parse_quark_share_url(payload.shareURL)
+    if not parsed["isValid"]:
+        raise HTTPException(status_code=400, detail="invalid Quark share URL")
+
+    bridged = call_omnibox_drive_bridge("/drive/info", {"shareURL": payload.shareURL})
+    if bridged is None:
+        return {
+            "provider": "quark",
+            "mode": "native-scaffold",
+            "share": parsed,
+            "ready": False,
+            "message": "Quark native share info resolver is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
+        }
+    return {"provider": "quark", "mode": "omnibox-fallback", "share": parsed, "data": bridged}
+
+
+@app.post("/api/drive/quark/share/files")
+def quark_share_files(payload: QuarkFileListPayload):
+    parsed = parse_quark_share_url(payload.shareURL)
+    if not parsed["isValid"]:
+        raise HTTPException(status_code=400, detail="invalid Quark share URL")
+
+    bridged = call_omnibox_drive_bridge(
+        "/drive/file-list",
+        {"shareURL": payload.shareURL, "pdirFid": payload.pdirFid},
+    )
+    if bridged is None:
+        return {
+            "provider": "quark",
+            "mode": "native-scaffold",
+            "share": parsed,
+            "files": [],
+            "total": 0,
+            "hasMore": False,
+            "message": "Quark native file listing is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
+        }
+    return {"provider": "quark", "mode": "omnibox-fallback", "share": parsed, "data": bridged}
+
+
+@app.post("/api/drive/quark/share/play")
+def quark_share_play(payload: QuarkPlayPayload):
+    parsed = parse_quark_share_url(payload.shareURL)
+    if not parsed["isValid"]:
+        raise HTTPException(status_code=400, detail="invalid Quark share URL")
+
+    bridged = call_omnibox_drive_bridge(
+        "/drive/video-play-info",
+        {
+            "shareURL": payload.shareURL,
+            "fid": payload.fid,
+            "flag": payload.flag,
+            "getTranscodeUrls": payload.getTranscodeUrls,
         },
-        "candidates": [
-            {
-                "name": candidate.name,
-                "url": candidate.url,
-                "host": candidate.host,
-                "headerKeys": sorted(candidate.headers.keys()),
-            }
-            for candidate in ranked
-        ],
+    )
+    if bridged is None:
+        return {
+            "provider": "quark",
+            "mode": "native-scaffold",
+            "share": parsed,
+            "ready": False,
+            "message": "Quark native play resolver is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
+        }
+    return {
+        "provider": "quark",
+        "mode": "omnibox-fallback",
+        "share": parsed,
+        "raw": bridged,
+        "play": normalize_quark_play_payload(bridged),
     }
 
 

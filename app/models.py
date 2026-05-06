@@ -42,3 +42,19 @@ class DriveAccountPayload(BaseModel):
 
 class DrivePlayNormalizePayload(BaseModel):
     payload: Any
+
+
+class QuarkSharePayload(BaseModel):
+    shareURL: str
+
+
+class QuarkFileListPayload(BaseModel):
+    shareURL: str
+    pdirFid: str = "0"
+
+
+class QuarkPlayPayload(BaseModel):
+    shareURL: str
+    fid: str
+    flag: str = ""
+    getTranscodeUrls: bool = True
