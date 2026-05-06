@@ -62,7 +62,7 @@ http://your-host:8788/api/subscription/{subscriptionId}/tvbox?token={subscriptio
 - Quark / UC / 百度 / 阿里 / 115 / 123 / 迅雷 / 天翼 provider 入口
 - 通用分享链接基础解析接口
 - Quark 分享目录递归扫描、本地视频文件筛选
-- Quark 转存后 `/file/v2/play` 转码候选解析，并保留 RAW/原画直链候选优先
+- Quark 转存后仅解析 `/file/v2/play` 播放候选；`/file/download` 属于限速下载通道，不作为播放候选
 - Quark 嵌套分享目录转存映射缓存，避免重复转存同一个文件
 - Quark 播放候选直链过滤、候选排序
 - 明确阻止 localhost / 127.0.0.1 / `/proxy` 作为播放地址

@@ -141,30 +141,20 @@ def _quark_saved_fids_from_task(client: QuarkClient, save: dict[str, Any]) -> li
 
 def _quark_play_candidates_for_saved_fid(client: QuarkClient, saved_fid: str, fallback_name: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
     video_play, headers = client.video_play_urls(saved_fid)
-    raw_candidates: list[dict[str, Any]] = []
+    play_candidates: list[dict[str, Any]] = []
     video_data = video_play.get("data") or {}
     video_items = video_data.get("video_list") or video_data.get("videoList") or []
     for item in video_items:
         if isinstance(item, dict):
             video_info = item.get("video_info") if isinstance(item.get("video_info"), dict) else {}
-            raw_candidates.append(
+            play_candidates.append(
                 {
                     "name": item.get("quality") or item.get("resolution") or item.get("format") or fallback_name or "transcoded",
                     "url": item.get("url") or video_info.get("url") or "",
                     "header": headers,
                 }
             )
-    download, download_headers = client.download_urls([saved_fid])
-    for item in download.get("data") or []:
-        if isinstance(item, dict):
-            raw_candidates.append(
-                {
-                    "name": "RAW",
-                    "url": item.get("download_url") or item.get("url") or "",
-                    "header": download_headers,
-                }
-            )
-    return raw_candidates, headers, video_play
+    return play_candidates, headers, video_play
 
 
 def _quark_cached_saved_fid(provider: str, share_id: str, share_fid: str, file_path: str) -> str:

@@ -22,6 +22,7 @@ class QuarkAuthRequired(QuarkNativeError):
 
 
 PC_BASE_URL = "https://drive-pc.quark.cn/1/clouddrive"
+PC_PLAY_BASE_URL = "https://drive-pc.quark.cn/1/clouddrive"
 MOBILE_BASE_URL = "https://drive-m.quark.cn/1/clouddrive"
 DEFAULT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -349,15 +350,11 @@ class QuarkClient:
             time.sleep(0.7)
         raise QuarkNativeError(f"Quark task timeout: {task_id}")
 
-    def download_urls(self, fids: list[str]) -> tuple[dict[str, Any], dict[str, str]]:
-        payload = self._request("POST", "file/download", body={"fids": fids})
-        return payload, {"User-Agent": self.user_agent, "Referer": "https://pan.quark.cn/", "Cookie": self.cookie}
-
     def video_play_urls(self, fid: str) -> tuple[dict[str, Any], dict[str, str]]:
         payload = self._request(
             "POST",
             "file/v2/play",
-            base_url="https://drive.quark.cn/1/clouddrive",
+            base_url=PC_PLAY_BASE_URL,
             body={
                 "fid": fid,
                 "resolutions": "normal,low,high,super,2k,4k",
