@@ -110,7 +110,7 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
         "iptv_filter_rules": "",
         "drive_default_provider": "quark",
         "drive_quality_priority": "4k,super,high,1080,720,low,raw",
-        "drive_bridge_mode": "omnibox-fallback",
+        "drive_bridge_mode": "disabled",
     }
     for key, value in default_settings.items():
         conn.execute(

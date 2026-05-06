@@ -107,6 +107,12 @@ def quark_client_from_account(row: sqlite3.Row | None) -> QuarkClient | None:
     return QuarkClient(row["cookie"], row["user_agent"])
 
 
+def drive_bridge_enabled() -> bool:
+    with get_conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = 'drive_bridge_mode'").fetchone()
+    return bool(row and row["value"] == "omnibox-fallback")
+
+
 def ensure_subscription_token(conn: sqlite3.Connection, subscription_id: int) -> str:
     row = conn.execute("SELECT token FROM subscriptions WHERE id = ?", (subscription_id,)).fetchone()
     if not row:
@@ -527,6 +533,8 @@ def check_drive_account(account_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="drive account not found")
         status = "configured" if row["cookie"] or row["token"] else "missing-auth"
+        if row["provider"] == "quark" and row["cookie"]:
+            status = "configured-mobile" if quark_has_mobile_auth(row["cookie"]) else "configured"
         conn.execute(
             """
             UPDATE drive_accounts
@@ -626,6 +634,7 @@ def drive_provider_status(provider: str):
             for account in fetch_drive_accounts(conn)
             if account["provider"] == provider and account["enabled"]
         ]
+        settings = {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM settings")}
         private_accounts = conn.execute(
             "SELECT cookie FROM drive_accounts WHERE provider = ? AND enabled = 1",
             (provider,),
@@ -633,7 +642,7 @@ def drive_provider_status(provider: str):
     return {
         "provider": provider,
         "nativeResolver": "share-files" if provider == "quark" else "planned",
-        "bridgeMode": "omnibox-fallback",
+        "bridgeMode": settings.get("drive_bridge_mode", "disabled"),
         "enabledAccounts": len(accounts),
         "ready": any(account["hasCookie"] or account["hasToken"] for account in accounts),
         "mobileAuthReady": any(quark_has_mobile_auth(row["cookie"]) for row in private_accounts),
@@ -707,7 +716,7 @@ def drive_share_info(provider: str, payload: DriveSharePayload):
             except QuarkNativeError as error:
                 return {"provider": provider, "mode": "native", "share": parsed, "ready": False, "message": str(error)}
 
-    bridged = call_omnibox_drive_bridge("/drive/info", {"shareURL": payload.shareURL})
+    bridged = call_omnibox_drive_bridge("/drive/info", {"shareURL": payload.shareURL}) if drive_bridge_enabled() else None
     if bridged is None:
         return {
             "provider": provider,
@@ -762,7 +771,7 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
         bridged = call_omnibox_drive_bridge(
             "/drive/file-list",
             {"shareURL": payload.shareURL, "pdirFid": payload.pdirFid},
-        )
+        ) if drive_bridge_enabled() else None
     except DriveBridgeError as error:
         return {
             "provider": provider,
@@ -824,6 +833,7 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                     payload.fid,
                     payload.shareFidToken,
                     "0",
+                    payload.pdirFid,
                 )
                 task_id = (save.get("data") or {}).get("task_id")
                 if not task_id:
@@ -847,15 +857,28 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                         "task": task,
                         "message": "Quark save task did not return saved file ids.",
                     }
-                download, headers = client.download_urls([str(saved_fids[0])])
+                saved_fid = str(saved_fids[0])
+                video_play, headers = client.video_play_urls(saved_fid)
                 raw_candidates = []
+                video_data = video_play.get("data") or {}
+                video_items = video_data.get("video_list") or video_data.get("videoList") or []
+                for item in video_items:
+                    if isinstance(item, dict):
+                        raw_candidates.append(
+                            {
+                                "name": item.get("quality") or item.get("resolution") or item.get("format") or "transcoded",
+                                "url": item.get("url") or "",
+                                "header": headers,
+                            }
+                        )
+                download, download_headers = client.download_urls([saved_fid])
                 for item in download.get("data") or []:
                     if isinstance(item, dict):
                         raw_candidates.append(
                             {
-                                "name": item.get("file_name") or payload.flag or "direct",
+                                "name": "RAW",
                                 "url": item.get("download_url") or item.get("url") or "",
-                                "header": headers,
+                                "header": download_headers,
                             }
                         )
                 return {
@@ -864,6 +887,7 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                     "share": {**parsed, "stokenReady": True},
                     "save": save,
                     "task": task,
+                    "videoPlay": video_play,
                     "raw": {"urls": raw_candidates, "header": headers},
                     "play": normalize_quark_play_payload({"urls": raw_candidates, "header": headers}),
                 }
@@ -888,7 +912,7 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                 "flag": payload.flag,
                 "getTranscodeUrls": payload.getTranscodeUrls,
             },
-        )
+        ) if drive_bridge_enabled() else None
     except DriveBridgeError as error:
         return {
             "provider": provider,
@@ -982,7 +1006,7 @@ def drive_share_videos(provider: str, payload: DriveVideosPayload):
             bridged = call_omnibox_drive_bridge(
                 "/drive/file-list",
                 {"shareURL": payload.shareURL, "pdirFid": folder_id},
-            )
+            ) if drive_bridge_enabled() else None
         except DriveBridgeError:
             return
         if bridged is None:

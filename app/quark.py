@@ -5,6 +5,7 @@ import random
 import re
 import time
 import uuid
+from io import BytesIO
 from typing import Any
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
@@ -66,7 +67,20 @@ def quark_qr_start() -> dict[str, str]:
             "uc_biz_str": "S:custom|OPT:SAREA@0|OPT:IMMERSIVE@1|OPT:BACK_BTN_STYLE@0",
         }
     )
-    return {"token": token, "qrURL": qr_url}
+    return {"token": token, "qrURL": qr_url, "qrSVG": quark_qr_svg(qr_url)}
+
+
+def quark_qr_svg(qr_url: str) -> str:
+    try:
+        import qrcode
+        import qrcode.image.svg
+    except ImportError as error:
+        raise QuarkNativeError("QR code dependency is not installed.") from error
+
+    image = qrcode.make(qr_url, image_factory=qrcode.image.svg.SvgPathImage)
+    buffer = BytesIO()
+    image.save(buffer)
+    return buffer.getvalue().decode("utf-8")
 
 
 def quark_qr_check(token: str) -> dict[str, Any]:
@@ -253,7 +267,15 @@ class QuarkClient:
         last.setdefault("data", {})["list"] = merged
         return last
 
-    def save_share_file(self, pwd_id: str, stoken: str, fid: str, fid_token: str, to_pdir_fid: str = "0") -> dict[str, Any]:
+    def save_share_file(
+        self,
+        pwd_id: str,
+        stoken: str,
+        fid: str,
+        fid_token: str,
+        to_pdir_fid: str = "0",
+        source_pdir_fid: str = "0",
+    ) -> dict[str, Any]:
         return self._request(
             "POST",
             "share/sharepage/save",
@@ -264,12 +286,12 @@ class QuarkClient:
                 "to_pdir_fid": to_pdir_fid or "0",
                 "pwd_id": pwd_id,
                 "stoken": stoken,
-                "pdir_fid": "0",
+                "pdir_fid": source_pdir_fid or "0",
                 "pdir_save_all": False,
                 "exclude_fids": [],
                 "scene": "link",
             },
-            mobile=True,
+            mobile=self.has_mobile_auth,
         )
 
     def query_task(self, task_id: str, retry_index: int = 0) -> dict[str, Any]:
@@ -302,4 +324,17 @@ class QuarkClient:
 
     def download_urls(self, fids: list[str]) -> tuple[dict[str, Any], dict[str, str]]:
         payload = self._request("POST", "file/download", body={"fids": fids})
+        return payload, {"User-Agent": self.user_agent, "Referer": "https://pan.quark.cn/", "Cookie": self.cookie}
+
+    def video_play_urls(self, fid: str) -> tuple[dict[str, Any], dict[str, str]]:
+        payload = self._request(
+            "POST",
+            "file/v2/play",
+            base_url="https://drive.quark.cn/1/clouddrive",
+            body={
+                "fid": fid,
+                "resolutions": "normal,low,high,super,2k,4k",
+                "supports": "fmp4",
+            },
+        )
         return payload, {"User-Agent": self.user_agent, "Referer": "https://pan.quark.cn/", "Cookie": self.cookie}

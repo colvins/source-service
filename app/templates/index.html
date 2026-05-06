@@ -117,8 +117,29 @@
       word-break: break-word;
     }
     .section { margin-top: 18px; scroll-margin-top: 20px; }
+    .qr-box {
+      display: grid;
+      grid-template-columns: 164px minmax(0, 1fr);
+      gap: 14px;
+      align-items: center;
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 18px;
+      background: rgba(255,255,255,0.04);
+    }
+    .qr-box svg {
+      width: 148px;
+      height: 148px;
+      padding: 10px;
+      border-radius: 16px;
+      background: #fff;
+    }
+    .stack { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .message { margin-top: 10px; color: var(--muted); font-size: 13px; }
     @media (max-width: 760px) {
       .hero, .two { grid-template-columns: 1fr; }
+      .qr-box { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -206,9 +227,22 @@ TVBox:
 
       <form class="card" method="post" action="/admin/drive-accounts">
         <h3>添加网盘账号</h3>
-        <p class="muted">Quark 推荐使用扫码授权接口：先调用 <code>POST /api/drive/quark/auth/qr/start</code> 获取二维码地址，扫码后调用 <code>POST /api/drive/quark/auth/qr/check</code> 保存账号。</p>
+        <p class="muted">Quark 推荐扫码授权。扫码后保存到本机 data volume，订阅导出不会包含账号信息。</p>
+        <div class="stack">
+          <button id="quarkQrStart" type="button">开始 Quark 扫码</button>
+          <button id="quarkQrCheck" type="button" style="display:none;">已扫码，检查并保存</button>
+        </div>
+        <div id="quarkQrPanel" class="qr-box" style="display:none;">
+          <div id="quarkQrImage"></div>
+          <div>
+            <strong>使用 Quark App 扫码登录</strong>
+            <p class="muted">二维码有效期较短。如果过期，重新点击“开始 Quark 扫码”。</p>
+            <a id="quarkQrLink" class="pill" href="#" target="_blank" rel="noreferrer">打开二维码链接</a>
+          </div>
+        </div>
+        <div id="quarkQrMessage" class="message"></div>
         <label>名称</label>
-        <input name="name" placeholder="Quark 主账号" required />
+        <input id="quarkAccountName" name="name" placeholder="Quark 主账号" required />
         <label>类型</label>
         <select name="provider">
           <option value="quark">Quark</option>
@@ -295,5 +329,72 @@ POST /api/drive/quark/share/play-best</pre>
       </div>
     </section>
   </div>
+  <script>
+    let quarkQrToken = "";
+    const qrStart = document.getElementById("quarkQrStart");
+    const qrCheck = document.getElementById("quarkQrCheck");
+    const qrPanel = document.getElementById("quarkQrPanel");
+    const qrImage = document.getElementById("quarkQrImage");
+    const qrLink = document.getElementById("quarkQrLink");
+    const qrMessage = document.getElementById("quarkQrMessage");
+    const accountName = document.getElementById("quarkAccountName");
+
+    function setQrMessage(text) {
+      qrMessage.textContent = text || "";
+    }
+
+    qrStart?.addEventListener("click", async () => {
+      setQrMessage("正在生成二维码...");
+      qrStart.disabled = true;
+      try {
+        const response = await fetch("/api/drive/quark/auth/qr/start", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "二维码生成失败");
+        quarkQrToken = payload.token;
+        qrImage.innerHTML = payload.qrSVG || "";
+        qrLink.href = payload.qrURL || "#";
+        qrPanel.style.display = "grid";
+        qrCheck.style.display = "inline-flex";
+        setQrMessage("二维码已生成，扫码确认后点击检查。");
+      } catch (error) {
+        setQrMessage(error.message || String(error));
+      } finally {
+        qrStart.disabled = false;
+      }
+    });
+
+    qrCheck?.addEventListener("click", async () => {
+      if (!quarkQrToken) {
+        setQrMessage("请先生成二维码。");
+        return;
+      }
+      setQrMessage("正在检查登录状态...");
+      qrCheck.disabled = true;
+      try {
+        const response = await fetch("/api/drive/quark/auth/qr/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: quarkQrToken,
+            name: accountName?.value || "Quark",
+            saveAccount: true
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "登录检查失败");
+        if (!payload.ready) {
+          setQrMessage(payload.message || "还没有完成扫码确认。");
+          return;
+        }
+        const mode = payload.mobileAuthReady ? "移动端播放授权已就绪" : "账号已保存，但仍缺少移动端播放授权";
+        setQrMessage(`${mode}，页面即将刷新。`);
+        setTimeout(() => window.location.href = "/#drive-accounts", 800);
+      } catch (error) {
+        setQrMessage(error.message || String(error));
+      } finally {
+        qrCheck.disabled = false;
+      }
+    });
+  </script>
 </body>
 </html>
