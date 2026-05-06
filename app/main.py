@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, row_to_drive_account, row_to_source, row_to_subscription
+from .baidu import BaiduClient, BaiduNativeError, parse_baidu_share_url
 from .drive import (
     DriveBridgeError,
     call_omnibox_drive_bridge,
@@ -107,6 +108,12 @@ def quark_client_from_account(row: sqlite3.Row | None) -> QuarkClient | None:
     return QuarkClient(row["cookie"], row["user_agent"])
 
 
+def baidu_client_from_account(row: sqlite3.Row | None) -> BaiduClient | None:
+    if row is None or not row["cookie"]:
+        return None
+    return BaiduClient(row["cookie"], row["user_agent"])
+
+
 def drive_bridge_enabled() -> bool:
     with get_conn() as conn:
         row = conn.execute("SELECT value FROM settings WHERE key = 'drive_bridge_mode'").fetchone()
@@ -116,6 +123,19 @@ def drive_bridge_enabled() -> bool:
 def _quark_payload_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     items = ((payload.get("data") or {}).get("list") or [])
     return [item for item in items if isinstance(item, dict)]
+
+
+def _baidu_payload_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = payload.get("list") or ((payload.get("data") or {}).get("list") or [])
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _baidu_find_file(payload: dict[str, Any], fid: str) -> dict[str, Any] | None:
+    target = str(fid or "")
+    for item in _baidu_payload_items(payload):
+        if str(item.get("fs_id") or item.get("fsid") or item.get("fid") or "") == target:
+            return item
+    return None
 
 
 def _quark_find_child(client: QuarkClient, parent_fid: str, name: str) -> dict[str, Any] | None:
@@ -878,7 +898,7 @@ def drive_provider_status(provider: str):
         ).fetchall()
     return {
         "provider": provider,
-        "nativeResolver": "share-files" if provider == "quark" else "planned",
+        "nativeResolver": "share-files" if provider in {"quark", "baidu"} else "planned",
         "bridgeMode": settings.get("drive_bridge_mode", "disabled"),
         "enabledAccounts": len(accounts),
         "ready": any(account["hasCookie"] or account["hasToken"] for account in accounts),
@@ -924,6 +944,8 @@ def drive_parse_share(provider: str, payload: DriveSharePayload):
         raise HTTPException(status_code=404, detail=str(error)) from error
     if provider == "quark":
         return parse_quark_share_url(payload.shareURL)
+    if provider == "baidu":
+        return parse_baidu_share_url(payload.shareURL)
     return parse_drive_share_url(payload.shareURL, provider)
 
 
@@ -951,6 +973,22 @@ def drive_share_info(provider: str, payload: DriveSharePayload):
                     "data": detail,
                 }
             except QuarkNativeError as error:
+                return {"provider": provider, "mode": "native", "share": parsed, "ready": False, "message": str(error)}
+
+    if provider == "baidu":
+        with get_conn() as conn:
+            client = baidu_client_from_account(fetch_active_drive_account_private(conn, "baidu"))
+        if client is not None:
+            try:
+                share, detail = client.list_share_files(payload.shareURL)
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": share,
+                    "data": detail,
+                    "ready": True,
+                }
+            except BaiduNativeError as error:
                 return {"provider": provider, "mode": "native", "share": parsed, "ready": False, "message": str(error)}
 
     bridged = call_omnibox_drive_bridge("/drive/info", {"shareURL": payload.shareURL}) if drive_bridge_enabled() else None
@@ -993,6 +1031,34 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
                     "hasMore": False,
                 }
             except QuarkNativeError as error:
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": parsed,
+                    "files": [],
+                    "total": 0,
+                    "hasMore": False,
+                    "ready": False,
+                    "message": str(error),
+                }
+
+    if provider == "baidu":
+        with get_conn() as conn:
+            client = baidu_client_from_account(fetch_active_drive_account_private(conn, "baidu"))
+        if client is not None:
+            try:
+                share, detail = client.list_share_files(payload.shareURL)
+                files = normalize_drive_files(detail)
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": share,
+                    "data": detail,
+                    "files": files,
+                    "total": len(files),
+                    "hasMore": False,
+                }
+            except BaiduNativeError as error:
                 return {
                     "provider": provider,
                     "mode": "native",
@@ -1135,6 +1201,30 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
             except QuarkNativeError as error:
                 return {"provider": provider, "mode": "native", "share": parsed, "ready": False, "message": str(error)}
 
+    if provider == "baidu":
+        with get_conn() as conn:
+            client = baidu_client_from_account(fetch_active_drive_account_private(conn, "baidu"))
+        if client is not None:
+            try:
+                share, detail = client.list_share_files(payload.shareURL)
+                item = _baidu_find_file(detail, payload.fid)
+                if item is None:
+                    raise BaiduNativeError("Baidu file was not found in the share list.")
+                url = str(item.get("dlink") or item.get("download_link") or "").strip()
+                if not url:
+                    raise BaiduNativeError("Baidu file list did not return a playable dlink.")
+                headers = client.play_headers()
+                raw_candidates = [{"name": payload.flag or item.get("server_filename") or item.get("name") or "Baidu", "url": url, "header": headers}]
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": share,
+                    "raw": {"urls": raw_candidates, "header": headers},
+                    "play": normalize_quark_play_payload({"urls": raw_candidates, "header": headers}),
+                }
+            except BaiduNativeError as error:
+                return {"provider": provider, "mode": "native", "share": parsed, "ready": False, "message": str(error)}
+
     try:
         bridged = call_omnibox_drive_bridge(
             "/drive/video-play-info",
@@ -1217,6 +1307,31 @@ def drive_share_videos(provider: str, payload: DriveVideosPayload):
                     "videos": collected[: payload.maxItems],
                 }
             except QuarkNativeError as error:
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": parsed,
+                    "videoCount": 0,
+                    "videos": [],
+                    "ready": False,
+                    "message": str(error),
+                }
+
+    if provider == "baidu":
+        with get_conn() as conn:
+            client = baidu_client_from_account(fetch_active_drive_account_private(conn, "baidu"))
+        if client is not None:
+            try:
+                share, detail = client.list_share_files(payload.shareURL)
+                videos = video_files_from_payload(detail)
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": share,
+                    "videoCount": len(videos),
+                    "videos": videos[: payload.maxItems],
+                }
+            except BaiduNativeError as error:
                 return {
                     "provider": provider,
                     "mode": "native",

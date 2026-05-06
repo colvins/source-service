@@ -19,7 +19,9 @@ class OmniBox:
 
     @staticmethod
     async def log(level, message):
-        print(f"[{level}] {message}")
+        import sys
+
+        print(f"[{level}] {message}", file=sys.stderr)
 
 
 def run(_exports):

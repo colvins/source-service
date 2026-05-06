@@ -29,7 +29,7 @@ DRIVE_PROVIDERS: dict[str, dict[str, Any]] = {
         "hosts": ("pan.baidu.com", "yun.baidu.com"),
         "paths": ("s",),
         "auth": "cookie",
-        "nativeStage": "planned",
+        "nativeStage": "share-parse",
     },
     "ali": {
         "name": "Ali",
@@ -336,8 +336,8 @@ def _raw_file_items(payload: Any) -> list[dict[str, Any]]:
 
 
 def normalize_drive_file(item: dict[str, Any], parent_path: str = "") -> dict[str, Any]:
-    name = str(_first_value(item, ("name", "file_name", "filename", "title")) or "")
-    fid = str(_first_value(item, ("fid", "fileId", "file_id", "id", "fs_id")) or "")
+    name = str(_first_value(item, ("name", "file_name", "filename", "server_filename", "title")) or "")
+    fid = str(_first_value(item, ("fid", "fileId", "file_id", "id", "fs_id", "fsid")) or "")
     raw_type = str(_first_value(item, ("type", "file_type", "category")) or "").lower()
     is_dir = bool(_first_value(item, ("isDir", "is_dir", "dir", "folder")))
     if raw_type in {"folder", "dir", "directory"}:
