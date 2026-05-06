@@ -50,6 +50,67 @@ function driveProviderFromShareURL(shareURL) {
   return "quark";
 }
 
+function driveDisplayName(provider) {
+  const names = {
+    quark: "夸克网盘",
+    uc: "UC网盘",
+    baidu: "百度网盘",
+    ali: "阿里网盘",
+    "115": "115网盘",
+    "123": "123网盘",
+    thunder: "迅雷网盘",
+    tianyi: "天翼网盘",
+  };
+  return names[provider] || "网盘";
+}
+
+function encodeDriveFileRef(file) {
+  const json = JSON.stringify(file || {});
+  return `colvins:${Buffer.from(json, "utf8").toString("base64url")}`;
+}
+
+function decodeDriveFileRef(value) {
+  const text = String(value || "");
+  if (!text.startsWith("colvins:")) {
+    return null;
+  }
+  try {
+    return JSON.parse(Buffer.from(text.slice("colvins:".length), "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function toOmniBoxDriveFile(file) {
+  const isDir = Boolean(file && file.isDir);
+  const ref = {
+    fid: file.fid || "",
+    name: file.name || "",
+    path: file.path || "",
+    shareFidToken: file.shareFidToken || "",
+    parentFid: file.parentFid || "0",
+  };
+  const fileId = isDir ? ref.fid : encodeDriveFileRef(ref);
+  return {
+    ...file,
+    fid: fileId,
+    file_id: fileId,
+    raw_fid: ref.fid,
+    file_name: file.name || "",
+    name: file.name || "",
+    size: file.size || 0,
+    file_size: file.size || 0,
+    file: !isDir,
+    dir: isDir,
+    is_dir: isDir,
+    file_type: isDir ? "folder" : "file",
+    format_type: file.isVideo ? "video" : "",
+    share_fid_token: file.shareFidToken || "",
+    pdir_fid: file.parentFid || "0",
+    path: file.path || "",
+  };
+}
+
 async function request(url, options = {}) {
   const timeout = Number(options.timeout || 30000);
   const controller = new AbortController();
@@ -112,19 +173,26 @@ async function setCache() {
 
 async function getDriveInfoByShareURL(shareURL) {
   const provider = driveProviderFromShareURL(shareURL);
-  return callSourceService(`/api/drive/${provider}/share/parse`, { shareURL });
+  const parsed = await callSourceService(`/api/drive/${provider}/share/parse`, { shareURL });
+  return {
+    ...parsed,
+    driveType: provider,
+    displayName: driveDisplayName(provider),
+  };
 }
 
 async function getDriveFileList(shareURL, pdirFid = "0") {
   const provider = driveProviderFromShareURL(shareURL);
   const result = await callSourceService(`/api/drive/${provider}/share/files`, { shareURL, pdirFid });
-  return { files: result.files || [], total: (result.files || []).length, has_more: false, raw: result };
+  const files = (result.files || []).map(toOmniBoxDriveFile);
+  return { files, total: files.length, has_more: false, raw: result };
 }
 
 async function getDriveVideoPlayInfo(shareURL, fileOrFid, flag = "", getTranscodeUrls = true) {
   const provider = driveProviderFromShareURL(shareURL);
-  const file = typeof fileOrFid === "object" && fileOrFid ? fileOrFid : {};
-  const fid = file.fid || file.id || fileOrFid;
+  const decoded = typeof fileOrFid === "string" ? decodeDriveFileRef(fileOrFid) : null;
+  const file = decoded || (typeof fileOrFid === "object" && fileOrFid ? fileOrFid : {});
+  const fid = file.raw_fid || file.fid || file.id || fileOrFid;
   const result = await callSourceService(`/api/drive/${provider}/share/play`, {
     shareURL,
     fid,
