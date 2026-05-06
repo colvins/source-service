@@ -204,15 +204,17 @@ async function getDriveVideoPlayInfo(shareURL, fileOrFid, flag = "", getTranscod
   });
   const play = result.play || {};
   const selected = play.selected || {};
+  const candidates = (play.candidates || []).map((item) => ({
+    name: item.name || "",
+    url: item.url || "",
+    header: item.headers || {},
+  }));
   const data = {
-    url: selected.url || "",
+    url: candidates,
+    directUrl: selected.url || "",
     header: selected.headers || {},
     headers: selected.headers || {},
-    urls: (play.candidates || []).map((item) => ({
-      name: item.name || "",
-      url: item.url || "",
-      header: item.headers || {},
-    })),
+    urls: candidates,
     proxyStreaming: false,
     raw: result,
   };
@@ -253,7 +255,8 @@ function preferPlayableTranscodeUrls(urls) {
 
 async function getDriveFileRawUrl(shareURL, fid) {
   const data = await getDriveVideoPlayInfo(shareURL, fid, "RAW", false);
-  return { url: data.url || "", header: data.header || {}, raw: data.raw };
+  const first = Array.isArray(data.url) ? data.url[0] : null;
+  return { url: data.directUrl || (first && first.url) || "", header: data.header || {}, raw: data.raw };
 }
 
 module.exports = {
