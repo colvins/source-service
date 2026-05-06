@@ -284,6 +284,22 @@ class QuarkClient:
             },
         )
 
+    def wait_task(self, task_id: str, timeout: int = 45) -> dict[str, Any]:
+        start = time.time()
+        retry_index = 0
+        last: dict[str, Any] = {}
+        while time.time() - start < timeout:
+            last = self.query_task(task_id, retry_index)
+            data = last.get("data") or {}
+            status = data.get("status")
+            if status == 2:
+                return last
+            if status == 3:
+                raise QuarkNativeError(data.get("message") or "Quark task failed.")
+            retry_index += 1
+            time.sleep(0.7)
+        raise QuarkNativeError(f"Quark task timeout: {task_id}")
+
     def download_urls(self, fids: list[str]) -> tuple[dict[str, Any], dict[str, str]]:
         payload = self._request("POST", "file/download", body={"fids": fids})
         return payload, {"User-Agent": self.user_agent, "Referer": "https://pan.quark.cn/", "Cookie": self.cookie}

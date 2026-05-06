@@ -825,14 +825,47 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                     payload.shareFidToken,
                     "0",
                 )
+                task_id = (save.get("data") or {}).get("task_id")
+                if not task_id:
+                    return {
+                        "provider": provider,
+                        "mode": "native",
+                        "share": {**parsed, "stokenReady": True},
+                        "ready": False,
+                        "save": save,
+                        "message": "Quark save task id is empty.",
+                    }
+                task = client.wait_task(str(task_id))
+                saved_fids = (((task.get("data") or {}).get("save_as") or {}).get("save_as_top_fids") or [])
+                if not saved_fids:
+                    return {
+                        "provider": provider,
+                        "mode": "native",
+                        "share": {**parsed, "stokenReady": True},
+                        "ready": False,
+                        "save": save,
+                        "task": task,
+                        "message": "Quark save task did not return saved file ids.",
+                    }
+                download, headers = client.download_urls([str(saved_fids[0])])
+                raw_candidates = []
+                for item in download.get("data") or []:
+                    if isinstance(item, dict):
+                        raw_candidates.append(
+                            {
+                                "name": item.get("file_name") or payload.flag or "direct",
+                                "url": item.get("download_url") or item.get("url") or "",
+                                "header": headers,
+                            }
+                        )
                 return {
                     "provider": provider,
                     "mode": "native",
                     "share": {**parsed, "stokenReady": True},
-                    "ready": False,
-                    "requiresTaskPolling": True,
                     "save": save,
-                    "message": "Native Quark save started. Playback URL polling will be wired next.",
+                    "task": task,
+                    "raw": {"urls": raw_candidates, "header": headers},
+                    "play": normalize_quark_play_payload({"urls": raw_candidates, "header": headers}),
                 }
             except QuarkAuthRequired as error:
                 return {
