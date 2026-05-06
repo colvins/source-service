@@ -57,6 +57,8 @@ class DrivePlayPayload(BaseModel):
     shareURL: str
     fid: str
     flag: str = ""
+    shareFidToken: str = ""
+    pdirFid: str = "0"
     getTranscodeUrls: bool = True
 
 

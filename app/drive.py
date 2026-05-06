@@ -350,6 +350,8 @@ def normalize_drive_file(item: dict[str, Any], parent_path: str = "") -> dict[st
         "type": "folder" if is_dir else raw_type or "file",
         "isDir": is_dir,
         "isVideo": is_video,
+        "shareFidToken": str(_first_value(item, ("share_fid_token", "shareFidToken", "fid_token")) or ""),
+        "parentFid": str(_first_value(item, ("pdir_fid", "parent_fid", "parentFid")) or ""),
         "raw": item,
     }
 

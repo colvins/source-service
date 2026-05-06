@@ -37,6 +37,7 @@ from .models import (
     SourcePayload,
     SubscriptionPayload,
 )
+from .quark import QuarkAuthRequired, QuarkClient, QuarkNativeError, quark_has_mobile_auth
 from .runtime import execute_source
 
 app = FastAPI(title="Colvins Source Service", version="0.1.0")
@@ -77,6 +78,24 @@ def fetch_subscriptions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 def fetch_drive_accounts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM drive_accounts ORDER BY sort_order ASC, id ASC").fetchall()
     return [row_to_drive_account(row) for row in rows]
+
+
+def fetch_active_drive_account_private(conn: sqlite3.Connection, provider: str) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT * FROM drive_accounts
+        WHERE provider = ? AND enabled = 1 AND (cookie <> '' OR token <> '')
+        ORDER BY sort_order ASC, id ASC
+        LIMIT 1
+        """,
+        (provider,),
+    ).fetchone()
+
+
+def quark_client_from_account(row: sqlite3.Row | None) -> QuarkClient | None:
+    if row is None or not row["cookie"]:
+        return None
+    return QuarkClient(row["cookie"], row["user_agent"])
 
 
 def ensure_subscription_token(conn: sqlite3.Connection, subscription_id: int) -> str:
@@ -555,12 +574,17 @@ def drive_provider_status(provider: str):
             for account in fetch_drive_accounts(conn)
             if account["provider"] == provider and account["enabled"]
         ]
+        private_accounts = conn.execute(
+            "SELECT cookie FROM drive_accounts WHERE provider = ? AND enabled = 1",
+            (provider,),
+        ).fetchall()
     return {
         "provider": provider,
-        "nativeResolver": "share-parse" if provider == "quark" else "planned",
+        "nativeResolver": "share-files" if provider == "quark" else "planned",
         "bridgeMode": "omnibox-fallback",
         "enabledAccounts": len(accounts),
         "ready": any(account["hasCookie"] or account["hasToken"] for account in accounts),
+        "mobileAuthReady": any(quark_has_mobile_auth(row["cookie"]) for row in private_accounts),
     }
 
 
@@ -615,6 +639,22 @@ def drive_share_info(provider: str, payload: DriveSharePayload):
     if not parsed["isValid"]:
         raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
 
+    if provider == "quark":
+        with get_conn() as conn:
+            client = quark_client_from_account(fetch_active_drive_account_private(conn, "quark"))
+        if client is not None:
+            try:
+                stoken = client.share_token(parsed["shareId"], parsed.get("password", ""))
+                detail = client.list_share_files(parsed["shareId"], stoken, "0")
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": {**parsed, "stokenReady": True},
+                    "data": detail,
+                }
+            except QuarkNativeError as error:
+                return {"provider": provider, "mode": "native", "share": parsed, "ready": False, "message": str(error)}
+
     bridged = call_omnibox_drive_bridge("/drive/info", {"shareURL": payload.shareURL})
     if bridged is None:
         return {
@@ -636,6 +676,35 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
     parsed = parse_drive_share_url(payload.shareURL, provider)
     if not parsed["isValid"]:
         raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
+
+    if provider == "quark":
+        with get_conn() as conn:
+            client = quark_client_from_account(fetch_active_drive_account_private(conn, "quark"))
+        if client is not None:
+            try:
+                stoken = client.share_token(parsed["shareId"], parsed.get("password", ""))
+                detail = client.list_share_files(parsed["shareId"], stoken, payload.pdirFid)
+                files = normalize_drive_files(detail)
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": {**parsed, "stokenReady": True},
+                    "data": detail,
+                    "files": files,
+                    "total": len(files),
+                    "hasMore": False,
+                }
+            except QuarkNativeError as error:
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": parsed,
+                    "files": [],
+                    "total": 0,
+                    "hasMore": False,
+                    "ready": False,
+                    "message": str(error),
+                }
 
     try:
         bridged = call_omnibox_drive_bridge(
@@ -681,6 +750,49 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
     parsed = parse_drive_share_url(payload.shareURL, provider)
     if not parsed["isValid"]:
         raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
+
+    if provider == "quark":
+        with get_conn() as conn:
+            client = quark_client_from_account(fetch_active_drive_account_private(conn, "quark"))
+        if client is not None:
+            if not payload.shareFidToken:
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": parsed,
+                    "ready": False,
+                    "requiresShareFidToken": True,
+                    "message": "Native Quark play requires shareFidToken from the file list response.",
+                }
+            try:
+                stoken = client.share_token(parsed["shareId"], parsed.get("password", ""))
+                save = client.save_share_file(
+                    parsed["shareId"],
+                    stoken,
+                    payload.fid,
+                    payload.shareFidToken,
+                    "0",
+                )
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": {**parsed, "stokenReady": True},
+                    "ready": False,
+                    "requiresTaskPolling": True,
+                    "save": save,
+                    "message": "Native Quark save started. Playback URL polling will be wired next.",
+                }
+            except QuarkAuthRequired as error:
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": parsed,
+                    "ready": False,
+                    "requiresMobileAuth": True,
+                    "message": str(error),
+                }
+            except QuarkNativeError as error:
+                return {"provider": provider, "mode": "native", "share": parsed, "ready": False, "message": str(error)}
 
     try:
         bridged = call_omnibox_drive_bridge(
@@ -731,6 +843,48 @@ def drive_share_videos(provider: str, payload: DriveVideosPayload):
     parsed = parse_drive_share_url(payload.shareURL, provider)
     if not parsed["isValid"]:
         raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
+
+    if provider == "quark":
+        with get_conn() as conn:
+            client = quark_client_from_account(fetch_active_drive_account_private(conn, "quark"))
+        if client is not None:
+            try:
+                stoken = client.share_token(parsed["shareId"], parsed.get("password", ""))
+                collected: list[dict[str, Any]] = []
+                visited: set[str] = set()
+
+                def visit_native(folder_id: str, depth: int, parent_path: str = "") -> None:
+                    if len(collected) >= payload.maxItems or depth > payload.maxDepth or folder_id in visited:
+                        return
+                    visited.add(folder_id)
+                    detail = client.list_share_files(parsed["shareId"], stoken, folder_id)
+                    files = normalize_drive_files(detail, parent_path)
+                    for item in files:
+                        if item["isVideo"]:
+                            collected.append(item)
+                            if len(collected) >= payload.maxItems:
+                                return
+                        elif payload.recursive and item["isDir"] and item["fid"]:
+                            visit_native(str(item["fid"]), depth + 1, item["path"])
+
+                visit_native(payload.pdirFid, 0)
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": {**parsed, "stokenReady": True},
+                    "videoCount": len(collected),
+                    "videos": collected[: payload.maxItems],
+                }
+            except QuarkNativeError as error:
+                return {
+                    "provider": provider,
+                    "mode": "native",
+                    "share": parsed,
+                    "videoCount": 0,
+                    "videos": [],
+                    "ready": False,
+                    "message": str(error),
+                }
 
     collected: list[dict[str, Any]] = []
     visited: set[str] = set()
@@ -787,6 +941,8 @@ def drive_share_play_best(provider: str, payload: DriveVideosPayload):
         shareURL=payload.shareURL,
         fid=best_file["fid"],
         flag=best_file["name"],
+        shareFidToken=best_file.get("shareFidToken", ""),
+        pdirFid=best_file.get("parentFid", "0"),
         getTranscodeUrls=True,
     )
     play = drive_share_play(provider, play_payload)
