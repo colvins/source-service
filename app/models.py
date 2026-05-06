@@ -27,3 +27,18 @@ class SubscriptionPayload(BaseModel):
 
 class SettingPayload(BaseModel):
     value: Any
+
+
+class DriveAccountPayload(BaseModel):
+    name: str
+    provider: str = Field(pattern="^(quark|uc|baidu|ali|115|other)$")
+    enabled: bool = True
+    sortOrder: int = 0
+    cookie: str = ""
+    token: str = ""
+    userAgent: str = ""
+    notes: str = ""
+
+
+class DrivePlayNormalizePayload(BaseModel):
+    payload: Any

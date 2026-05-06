@@ -5,89 +5,247 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Colvins Source Service</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background:#111318; color:#f5f7fa; margin:0; }
-    .wrap { max-width: 1200px; margin:0 auto; padding:32px 20px 60px; }
-    h1,h2 { margin:0 0 12px; }
-    .muted { color:#9ca3af; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap:16px; margin-top:20px; }
-    .card { background:#1a1f29; border:1px solid #2b3342; border-radius:18px; padding:18px; }
-    pre { background:#0d1117; color:#d7e6ff; border-radius:10px; padding:14px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
-    ul { padding-left:18px; }
-    a { color:#6ab4ff; text-decoration:none; }
-    .pill { display:inline-block; margin:0 8px 8px 0; padding:6px 10px; border-radius:999px; background:#253041; color:#d9e6ff; font-size:13px; }
+    :root {
+      color-scheme: dark;
+      --bg: #07090d;
+      --card: #151922;
+      --card-2: #1c2230;
+      --line: #2b3342;
+      --text: #f5f7fb;
+      --muted: #97a0ad;
+      --accent: #37c8ff;
+      --green: #34d399;
+      --orange: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 18% -8%, rgba(55, 200, 255, 0.22), transparent 32rem),
+        radial-gradient(circle at 82% 8%, rgba(52, 211, 153, 0.14), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", sans-serif;
+    }
+    a { color: inherit; text-decoration: none; }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #0d1118;
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+    }
+    label { display: block; margin: 10px 0 6px; color: var(--muted); font-size: 13px; }
+    button, .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: 999px;
+      background: var(--accent);
+      color: #001019;
+      padding: 9px 14px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .wrap { max-width: 1220px; margin: 0 auto; padding: 30px 20px 70px; }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: end;
+      margin-bottom: 20px;
+    }
+    h1 { margin: 0; font-size: clamp(32px, 5vw, 56px); letter-spacing: -0.05em; }
+    h2 { margin: 0 0 14px; font-size: 22px; }
+    h3 { margin: 0 0 10px; font-size: 17px; }
+    .muted { color: var(--muted); }
+    .nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 18px 0 24px;
+    }
+    .nav a {
+      border: 1px solid rgba(255,255,255,0.09);
+      background: rgba(255,255,255,0.06);
+      padding: 10px 14px;
+      border-radius: 999px;
+      color: #d9e6ff;
+    }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+    .two { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(300px, 0.9fr); gap: 16px; }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.03)), var(--card);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 22px;
+      padding: 18px;
+      box-shadow: 0 18px 48px rgba(0,0,0,0.25);
+    }
+    .metric { font-size: 34px; font-weight: 800; letter-spacing: -0.04em; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0 8px 8px 0;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #253041;
+      color: #d9e6ff;
+      font-size: 13px;
+    }
+    .pill.green { background: rgba(52,211,153,0.14); color: #86efac; }
+    .pill.orange { background: rgba(245,158,11,0.14); color: #fcd34d; }
+    .row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      padding: 12px 0;
+      border-top: 1px solid rgba(255,255,255,0.07);
+    }
+    .row:first-child { border-top: 0; }
+    pre {
+      background: #0b0f16;
+      color: #d7e6ff;
+      border-radius: 14px;
+      padding: 14px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .section { margin-top: 18px; scroll-margin-top: 20px; }
+    @media (max-width: 760px) {
+      .hero, .two { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>{{ settings.get('service_name', 'Colvins Source Service') }}</h1>
-    <p class="muted">v0.1.0 scaffold · 独立 Docker 项目 · 先提供源管理、订阅管理、导出接口和后台入口。</p>
+    <header class="hero">
+      <div>
+        <p class="muted">v0.2.0 · Docker · CatPaw/Open · TVBox · Drive Resolver</p>
+        <h1>{{ settings.get('service_name', 'Colvins Source Service') }}</h1>
+      </div>
+      <a class="button" href="/health">健康检查</a>
+    </header>
 
-    <div class="grid">
-      <section class="card">
-        <h2>当前设置</h2>
-        <ul>
-          {% for key, value in settings.items() %}
-          <li><strong>{{ key }}</strong>: {{ value }}</li>
-          {% endfor %}
-        </ul>
-      </section>
+    <nav class="nav">
+      <a href="#sources">源执行内核</a>
+      <a href="#subscriptions">订阅导出</a>
+      <a href="#drive-accounts">网盘账号</a>
+      <a href="#runtime-debug">运行时调试</a>
+      <a href="#settings">系统设置</a>
+    </nav>
 
-      <section class="card">
-        <h2>Sources</h2>
+    <section class="grid">
+      <div class="card"><div class="metric">{{ sources|length }}</div><div class="muted">已配置 source</div></div>
+      <div class="card"><div class="metric">{{ subscriptions|length }}</div><div class="muted">订阅</div></div>
+      <div class="card"><div class="metric">{{ driveAccounts|length }}</div><div class="muted">网盘账号</div></div>
+      <div class="card"><div class="metric">0</div><div class="muted">媒体代理，设计上保持为 0</div></div>
+    </section>
+
+    <section id="sources" class="section card">
+      <h2>源执行内核</h2>
+      <p class="muted">管理 JavaScript / Python source。网页编辑器会在后续版本补齐，当前可先通过 API 导入脚本。</p>
+      {% for source in sources %}
+      <div class="row">
         <div>
-          {% for source in sources %}
-          <span class="pill">#{{ source.id }} {{ source.name }} · {{ source.runtimeType }}</span>
-          {% else %}
-          <p class="muted">暂无 source。</p>
-          {% endfor %}
+          <strong>#{{ source.id }} {{ source.name }}</strong><br />
+          <span class="muted">{{ source.runtimeType }} · {{ source.version or 'no version' }} · {{ source.description or source.notes or '暂无备注' }}</span>
         </div>
-      </section>
+        <span class="pill {{ 'green' if source.enabled else 'orange' }}">{{ '启用' if source.enabled else '停用' }}</span>
+      </div>
+      {% else %}
+      <p class="muted">暂无 source。</p>
+      {% endfor %}
+    </section>
 
-      <section class="card">
-        <h2>Subscriptions</h2>
+    <section id="subscriptions" class="section card">
+      <h2>订阅导出</h2>
+      {% for sub in subscriptions %}
+      <div class="row">
         <div>
-          {% for sub in subscriptions %}
-          <div style="margin-bottom:14px;">
-            <strong>#{{ sub.id }} {{ sub.name }}</strong><br />
-            <span class="muted">token: {{ sub.token }}</span><br />
-            <a href="/api/export/{{ sub.id }}/catpaw/config">CatPaw Config</a>
-            ·
-            <a href="/api/export/{{ sub.id }}/tvbox?token={{ sub.token }}">TVBox Config</a>
+          <strong>#{{ sub.id }} {{ sub.name }}</strong><br />
+          <span class="muted">{{ sub.sources|length }} 个 source · token 已生成</span><br />
+          <a href="/api/export/{{ sub.id }}/catpaw/index.js.md5">index.js.md5</a>
+          · <a href="/api/export/{{ sub.id }}/catpaw/index.js">index.js</a>
+          · <a href="/api/export/{{ sub.id }}/catpaw/config">config</a>
+          · <a href="/api/export/{{ sub.id }}/tvbox?token={{ sub.token }}">TVBox</a>
+        </div>
+        <span class="pill {{ 'green' if sub.enabled else 'orange' }}">{{ '启用' if sub.enabled else '停用' }}</span>
+      </div>
+      {% else %}
+      <p class="muted">暂无订阅。</p>
+      {% endfor %}
+    </section>
+
+    <section id="drive-accounts" class="section two">
+      <div class="card">
+        <h2>网盘账号</h2>
+        <p class="muted">第一版先支持账号保存、状态检查、Quark 候选直链筛选。后续逐步替换 OmniBox bridge。</p>
+        {% for account in driveAccounts %}
+        <div class="row">
+          <div>
+            <strong>#{{ account.id }} {{ account.name }}</strong><br />
+            <span class="muted">{{ account.provider }} · {{ account.status }} · cookie: {{ '有' if account.hasCookie else '无' }} · token: {{ '有' if account.hasToken else '无' }}</span>
           </div>
-          {% else %}
-          <p class="muted">暂无订阅。</p>
-          {% endfor %}
+          <span class="pill {{ 'green' if account.enabled else 'orange' }}">{{ '启用' if account.enabled else '停用' }}</span>
         </div>
-      </section>
+        {% else %}
+        <p class="muted">暂无网盘账号。</p>
+        {% endfor %}
+      </div>
 
-      <section class="card">
-        <h2>内置模板</h2>
-        <ul>
-          {% for tpl in templates %}
-          <li>{{ tpl['name'] }} · {{ tpl['runtime_type'] }} · {{ tpl['description'] }}</li>
-          {% endfor %}
-        </ul>
-      </section>
-    </div>
+      <form class="card" method="post" action="/admin/drive-accounts">
+        <h3>添加网盘账号</h3>
+        <label>名称</label>
+        <input name="name" placeholder="Quark 主账号" required />
+        <label>类型</label>
+        <select name="provider">
+          <option value="quark">Quark</option>
+          <option value="uc">UC</option>
+          <option value="baidu">Baidu</option>
+          <option value="ali">Ali</option>
+          <option value="115">115</option>
+          <option value="other">Other</option>
+        </select>
+        <label>Cookie / Token</label>
+        <textarea name="cookie" rows="4" placeholder="只保存在本机 data volume，不会出现在订阅导出中"></textarea>
+        <label>User-Agent</label>
+        <input name="user_agent" placeholder="可选" />
+        <label>备注</label>
+        <input name="notes" placeholder="可选" />
+        <div style="margin-top:14px;"><button type="submit">保存账号</button></div>
+      </form>
+    </section>
 
-    <section class="card" style="margin-top:16px;">
-      <h2>当前已开放接口</h2>
-      <pre>GET  /health
-GET  /api/admin/sources
-POST /api/admin/sources
-PUT  /api/admin/sources/{id}
-DELETE /api/admin/sources/{id}
-GET  /api/admin/templates
-GET  /api/admin/subscriptions
-POST /api/admin/subscriptions
-PUT  /api/admin/subscriptions/{id}
-DELETE /api/admin/subscriptions/{id}
-GET  /api/admin/settings
-PUT  /api/admin/settings/{key}
-GET  /api/export/{subscriptionId}/catpaw/config
-GET  /api/export/{subscriptionId}/catpaw/index.js.md5
-GET  /api/export/{subscriptionId}/tvbox?token=...
-GET  /api/runtime/source/{sourceId}</pre>
+    <section id="runtime-debug" class="section card">
+      <h2>运行时调试入口</h2>
+      <pre>GET  /api/runtime/source/{sourceId}/home
+GET  /api/runtime/source/{sourceId}/category?categoryId=&page=1
+GET  /api/runtime/source/{sourceId}/search?keyword=&page=1
+GET  /api/runtime/source/{sourceId}/detail?videoId=
+GET  /api/runtime/source/{sourceId}/play?flag=&playId=
+
+GET  /api/drive/quark/status
+POST /api/drive/quark/normalize-play</pre>
+    </section>
+
+    <section id="settings" class="section card">
+      <h2>系统设置</h2>
+      <div class="grid">
+        {% for key, value in settings.items() %}
+        <form method="post" action="/admin/settings">
+          <label>{{ key }}</label>
+          <input type="hidden" name="key" value="{{ key }}" />
+          <input name="value" value="{{ value }}" />
+          <div style="margin-top:8px;"><button type="submit">保存</button></div>
+        </form>
+        {% endfor %}
+      </div>
     </section>
   </div>
 </body>

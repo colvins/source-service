@@ -5,13 +5,14 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .db import get_conn, init_db, row_to_source, row_to_subscription
-from .models import SettingPayload, SourcePayload, SubscriptionPayload
+from .db import get_conn, init_db, row_to_drive_account, row_to_source, row_to_subscription
+from .drive import best_direct_candidate, extract_play_candidates, rank_play_candidates
+from .models import DriveAccountPayload, DrivePlayNormalizePayload, SettingPayload, SourcePayload, SubscriptionPayload
 from .runtime import execute_source
 
 app = FastAPI(title="Colvins Source Service", version="0.1.0")
@@ -47,6 +48,11 @@ def fetch_subscriptions(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         item["sources"] = [row_to_source(source_row) for source_row in source_rows]
         items.append(item)
     return items
+
+
+def fetch_drive_accounts(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT * FROM drive_accounts ORDER BY sort_order ASC, id ASC").fetchall()
+    return [row_to_drive_account(row) for row in rows]
 
 
 def ensure_subscription_token(conn: sqlite3.Connection, subscription_id: int) -> str:
@@ -170,6 +176,7 @@ def dashboard(request: Request):
         }
         sources = fetch_sources(conn)
         subscriptions = fetch_subscriptions(conn)
+        drive_accounts = fetch_drive_accounts(conn)
         templates_data = conn.execute("SELECT * FROM source_templates ORDER BY id ASC").fetchall()
         templates_payload = [dict(row) for row in templates_data]
     return templates.TemplateResponse(
@@ -179,9 +186,35 @@ def dashboard(request: Request):
             "settings": settings,
             "sources": sources,
             "subscriptions": subscriptions,
+            "driveAccounts": drive_accounts,
             "templates": templates_payload,
         },
     )
+
+
+@app.post("/admin/drive-accounts")
+def create_drive_account_form(
+    name: str = Form(...),
+    provider: str = Form("quark"),
+    cookie: str = Form(""),
+    user_agent: str = Form(""),
+    notes: str = Form(""),
+):
+    payload = DriveAccountPayload(
+        name=name,
+        provider=provider,
+        cookie=cookie,
+        userAgent=user_agent,
+        notes=notes,
+    )
+    create_drive_account(payload)
+    return RedirectResponse(url="/#drive-accounts", status_code=303)
+
+
+@app.post("/admin/settings")
+def update_setting_form(key: str = Form(...), value: str = Form("")):
+    update_setting(key, SettingPayload(value=value))
+    return RedirectResponse(url="/#settings", status_code=303)
 
 
 @app.get("/api/admin/sources")
@@ -335,6 +368,92 @@ def delete_subscription(subscription_id: int):
     return {"ok": True}
 
 
+@app.get("/api/admin/drive-accounts")
+def list_drive_accounts():
+    with get_conn() as conn:
+        return {"items": fetch_drive_accounts(conn)}
+
+
+@app.post("/api/admin/drive-accounts")
+def create_drive_account(payload: DriveAccountPayload):
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO drive_accounts (name, provider, enabled, sort_order, cookie, token, user_agent, notes, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.name,
+                payload.provider,
+                1 if payload.enabled else 0,
+                payload.sortOrder,
+                payload.cookie,
+                payload.token,
+                payload.userAgent,
+                payload.notes,
+                "configured" if payload.cookie or payload.token else "missing-auth",
+            ),
+        )
+        row = conn.execute("SELECT * FROM drive_accounts WHERE id = ?", (cur.lastrowid,)).fetchone()
+        return row_to_drive_account(row)
+
+
+@app.put("/api/admin/drive-accounts/{account_id}")
+def update_drive_account(account_id: int, payload: DriveAccountPayload):
+    with get_conn() as conn:
+        exists = conn.execute("SELECT id FROM drive_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail="drive account not found")
+        conn.execute(
+            """
+            UPDATE drive_accounts
+            SET name=?, provider=?, enabled=?, sort_order=?, cookie=?, token=?, user_agent=?, notes=?,
+                status=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (
+                payload.name,
+                payload.provider,
+                1 if payload.enabled else 0,
+                payload.sortOrder,
+                payload.cookie,
+                payload.token,
+                payload.userAgent,
+                payload.notes,
+                "configured" if payload.cookie or payload.token else "missing-auth",
+                account_id,
+            ),
+        )
+        row = conn.execute("SELECT * FROM drive_accounts WHERE id = ?", (account_id,)).fetchone()
+        return row_to_drive_account(row)
+
+
+@app.delete("/api/admin/drive-accounts/{account_id}")
+def delete_drive_account(account_id: int):
+    with get_conn() as conn:
+        conn.execute("DELETE FROM drive_accounts WHERE id = ?", (account_id,))
+    return {"ok": True}
+
+
+@app.post("/api/admin/drive-accounts/{account_id}/check")
+def check_drive_account(account_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM drive_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="drive account not found")
+        status = "configured" if row["cookie"] or row["token"] else "missing-auth"
+        conn.execute(
+            """
+            UPDATE drive_accounts
+            SET status=?, last_checked_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (status, account_id),
+        )
+        updated = conn.execute("SELECT * FROM drive_accounts WHERE id = ?", (account_id,)).fetchone()
+        return row_to_drive_account(updated)
+
+
 @app.get("/api/admin/settings")
 def list_settings():
     with get_conn() as conn:
@@ -354,6 +473,49 @@ def update_setting(key: str, payload: SettingPayload):
             (key, value),
         )
     return {"key": key, "value": value}
+
+
+@app.get("/api/drive/quark/status")
+def quark_drive_status():
+    with get_conn() as conn:
+        accounts = [
+            account
+            for account in fetch_drive_accounts(conn)
+            if account["provider"] == "quark" and account["enabled"]
+        ]
+    return {
+        "provider": "quark",
+        "nativeResolver": "scaffold",
+        "bridgeMode": "omnibox-fallback",
+        "enabledAccounts": len(accounts),
+        "ready": any(account["hasCookie"] or account["hasToken"] for account in accounts),
+    }
+
+
+@app.post("/api/drive/quark/normalize-play")
+def quark_normalize_play(payload: DrivePlayNormalizePayload):
+    candidates = extract_play_candidates(payload.payload)
+    ranked = rank_play_candidates(candidates)
+    best = best_direct_candidate(payload.payload)
+    return {
+        "candidateCount": len(candidates),
+        "directCandidateCount": len(ranked),
+        "selected": None if best is None else {
+            "name": best.name,
+            "url": best.url,
+            "host": best.host,
+            "headerKeys": sorted(best.headers.keys()),
+        },
+        "candidates": [
+            {
+                "name": candidate.name,
+                "url": candidate.url,
+                "host": candidate.host,
+                "headerKeys": sorted(candidate.headers.keys()),
+            }
+            for candidate in ranked
+        ],
+    }
 
 
 @app.get("/api/export/{subscription_id}/catpaw/config")

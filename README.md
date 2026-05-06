@@ -8,7 +8,8 @@
 - subscription 管理
 - CatPaw/Open 与 TVBox 导出
 - 后台管理入口
-- 为后续 JS/Python source 执行内核预留数据模型
+- JS/Python source 执行内核
+- 网盘账号管理与 Quark 候选直链筛选
 
 ## 启动
 
@@ -27,8 +28,32 @@ OMNIBOX_API_URL=http://your-host:7023/api/spider/omnibox
 
 - `8788`
 
+## 网页入口
+
+- `/`：后台首页
+- `/#sources`：源执行内核
+- `/#subscriptions`：订阅导出
+- `/#drive-accounts`：网盘账号
+- `/#runtime-debug`：运行时调试
+- `/#settings`：系统设置
+
+## 网盘能力现状
+
+当前版本已经提供：
+
+- 网盘账号保存与状态检查接口
+- Quark 播放候选解析、直链过滤、候选排序
+- 明确阻止 localhost / 127.0.0.1 / `/proxy` 作为播放地址
+- 继续保留 `OMNIBOX_API_URL` 作为临时 fallback bridge
+
+还未完成：
+
+- Quark 二维码登录
+- Quark cookie 自动刷新
+- Quark 分享链接保存/转存/文件树递归
+- 完整替换 OmniBox 网盘后端
+
 ## 当前限制
 
-- `/api/runtime/source/{id}` 仍是 stub
-- 还未接入真正的 source 执行内核
-- 还未接入网盘/直播/搜索/详情运行时
+- 网盘最终 URL 获取仍可临时桥接 OmniBox
+- 网页 source 编辑器还未做成完整 Monaco/依赖管理体验

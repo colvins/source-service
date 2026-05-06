@@ -79,6 +79,22 @@ def init_db() -> None:
                 template_body TEXT NOT NULL DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS drive_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                cookie TEXT NOT NULL DEFAULT '',
+                token TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'unknown',
+                last_checked_at TEXT DEFAULT '',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         seed_defaults(conn)
@@ -92,6 +108,9 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
         "tmdb_api_key": "",
         "danmu_api_url": "",
         "iptv_filter_rules": "",
+        "drive_default_provider": "quark",
+        "drive_quality_priority": "4k,super,high,1080,720,low,raw",
+        "drive_bridge_mode": "omnibox-fallback",
     }
     for key, value in default_settings.items():
         conn.execute(
@@ -162,6 +181,24 @@ def row_to_subscription(row: sqlite3.Row) -> dict:
         "enabled": bool(row["enabled"]),
         "sortOrder": row["sort_order"],
         "notes": row["notes"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def row_to_drive_account(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "provider": row["provider"],
+        "enabled": bool(row["enabled"]),
+        "sortOrder": row["sort_order"],
+        "hasCookie": bool(row["cookie"]),
+        "hasToken": bool(row["token"]),
+        "userAgent": row["user_agent"],
+        "notes": row["notes"],
+        "status": row["status"],
+        "lastCheckedAt": row["last_checked_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
