@@ -1,4 +1,5 @@
-const API_BASE_URL = process.env.OMNIBOX_API_URL || "";
+const CONTEXT = JSON.parse(process.env.COLVINS_CONTEXT || "{}");
+const API_BASE_URL = process.env.COLVINS_SOURCE_API_URL || CONTEXT.baseURL || process.env.OMNIBOX_API_URL || "";
 
 async function callAPI(endpoint, data = {}) {
   if (!API_BASE_URL) {
@@ -18,6 +19,35 @@ async function callAPI(endpoint, data = {}) {
     throw new Error(result.message || `API ${endpoint} failed`);
   }
   return result;
+}
+
+async function callSourceService(endpoint, data = {}) {
+  if (!API_BASE_URL) {
+    return {};
+  }
+  const response = await request(`${API_BASE_URL}${endpoint}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: data,
+    timeout: 60000,
+  });
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new Error(`Source Service ${endpoint} failed: HTTP ${response.statusCode}`);
+  }
+  return JSON.parse(response.body || "{}");
+}
+
+function driveProviderFromShareURL(shareURL) {
+  const text = String(shareURL || "").toLowerCase();
+  if (text.includes("quark.cn")) return "quark";
+  if (text.includes("uc.cn") || text.includes("ucdisk.cn")) return "uc";
+  if (text.includes("baidu.com") || text.includes("yun.baidu.com")) return "baidu";
+  if (text.includes("aliyundrive.com") || text.includes("alipan.com")) return "ali";
+  if (text.includes("115.com")) return "115";
+  if (text.includes("123pan.com")) return "123";
+  if (text.includes("xunlei.com")) return "thunder";
+  if (text.includes("cloud.189.cn")) return "tianyi";
+  return "quark";
 }
 
 async function request(url, options = {}) {
@@ -81,18 +111,43 @@ async function setCache() {
 }
 
 async function getDriveInfoByShareURL(shareURL) {
-  const result = await callAPI("/drive/info", { shareURL });
-  return result.data || {};
+  const provider = driveProviderFromShareURL(shareURL);
+  return callSourceService(`/api/drive/${provider}/share/parse`, { shareURL });
 }
 
 async function getDriveFileList(shareURL, pdirFid = "0") {
-  const result = await callAPI("/drive/file-list", { shareURL, pdirFid });
-  return result.data || { files: [], total: 0, has_more: false };
+  const provider = driveProviderFromShareURL(shareURL);
+  const result = await callSourceService(`/api/drive/${provider}/share/files`, { shareURL, pdirFid });
+  return { files: result.files || [], total: (result.files || []).length, has_more: false, raw: result };
 }
 
-async function getDriveVideoPlayInfo(shareURL, fid, flag = "", getTranscodeUrls = true) {
-  const result = await callAPI("/drive/video-play-info", { shareURL, fid, flag, getTranscodeUrls });
-  const data = result.data || { url: "", header: {}, danmaku: [] };
+async function getDriveVideoPlayInfo(shareURL, fileOrFid, flag = "", getTranscodeUrls = true) {
+  const provider = driveProviderFromShareURL(shareURL);
+  const file = typeof fileOrFid === "object" && fileOrFid ? fileOrFid : {};
+  const fid = file.fid || file.id || fileOrFid;
+  const result = await callSourceService(`/api/drive/${provider}/share/play`, {
+    shareURL,
+    fid,
+    flag: flag || file.name || "",
+    filePath: file.path || "",
+    shareFidToken: file.shareFidToken || file.share_fid_token || "",
+    pdirFid: file.parentFid || file.pdirFid || "0",
+    getTranscodeUrls,
+  });
+  const play = result.play || {};
+  const selected = play.selected || {};
+  const data = {
+    url: selected.url || "",
+    header: selected.headers || {},
+    headers: selected.headers || {},
+    urls: (play.candidates || []).map((item) => ({
+      name: item.name || "",
+      url: item.url || "",
+      header: item.headers || {},
+    })),
+    proxyStreaming: false,
+    raw: result,
+  };
   if (Array.isArray(data.urls)) {
     return {
       ...data,
@@ -117,20 +172,20 @@ async function getDriveVideoPlayInfo(shareURL, fid, flag = "", getTranscodeUrls 
 function preferPlayableTranscodeUrls(urls) {
   const rank = (item) => {
     const name = String(item && item.name ? item.name : "").toLowerCase();
-    if (name.includes("4k")) return 0;
-    if (name.includes("super")) return 1;
-    if (name.includes("high")) return 2;
-    if (name.includes("1080")) return 3;
-    if (name.includes("low")) return 4;
-    if (name.includes("raw") || name.includes("原")) return 9;
-    return 5;
+    if (name.includes("raw") || name.includes("原")) return 0;
+    if (name.includes("4k")) return 1;
+    if (name.includes("super")) return 2;
+    if (name.includes("high")) return 3;
+    if (name.includes("1080")) return 4;
+    if (name.includes("low")) return 5;
+    return 6;
   };
   return [...urls].sort((a, b) => rank(a) - rank(b));
 }
 
 async function getDriveFileRawUrl(shareURL, fid) {
-  const result = await callAPI("/drive/file-raw-url", { shareURL, fid });
-  return result.data || { url: "" };
+  const data = await getDriveVideoPlayInfo(shareURL, fid, "RAW", false);
+  return { url: data.url || "", header: data.header || {}, raw: data.raw };
 }
 
 module.exports = {
