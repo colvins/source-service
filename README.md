@@ -56,7 +56,8 @@ http://your-host:8788/api/subscription/{subscriptionId}/tvbox?token={subscriptio
 当前版本已经提供：
 
 - 网盘账号保存与状态检查接口
-- Quark 分享链接基础解析接口
+- Quark / UC / 百度 / 阿里 / 115 / 123 / 迅雷 / 天翼 provider 入口
+- 通用分享链接基础解析接口
 - Quark 播放候选解析、直链过滤、候选排序
 - 明确阻止 localhost / 127.0.0.1 / `/proxy` 作为播放地址
 - 继续保留 `OMNIBOX_API_URL` 作为临时 fallback bridge
@@ -71,6 +72,12 @@ http://your-host:8788/api/subscription/{subscriptionId}/tvbox?token={subscriptio
 ## Quark API
 
 ```text
+GET  /api/drive/providers
+POST /api/drive/share/parse
+POST /api/drive/{provider}/share/parse
+POST /api/drive/{provider}/share/info
+POST /api/drive/{provider}/share/files
+POST /api/drive/{provider}/share/play
 POST /api/drive/quark/share/parse
 POST /api/drive/quark/share/info
 POST /api/drive/quark/share/files

@@ -215,6 +215,9 @@ TVBox:
           <option value="baidu">Baidu</option>
           <option value="ali">Ali</option>
           <option value="115">115</option>
+          <option value="123">123</option>
+          <option value="thunder">Thunder</option>
+          <option value="tianyi">Tianyi</option>
           <option value="other">Other</option>
         </select>
         <label>Cookie / Token</label>
@@ -236,7 +239,14 @@ GET  /api/runtime/source/{sourceId}/detail?videoId=
 GET  /api/runtime/source/{sourceId}/play?flag=&playId=
 
 GET  /api/drive/quark/status
+GET  /api/drive/providers
+GET  /api/drive/{provider}/status
 POST /api/drive/quark/normalize-play
+POST /api/drive/share/parse
+POST /api/drive/{provider}/share/parse
+POST /api/drive/{provider}/share/info
+POST /api/drive/{provider}/share/files
+POST /api/drive/{provider}/share/play
 POST /api/drive/quark/share/parse
 POST /api/drive/quark/share/info
 POST /api/drive/quark/share/files

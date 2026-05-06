@@ -8,6 +8,66 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 
+DRIVE_PROVIDERS: dict[str, dict[str, Any]] = {
+    "quark": {
+        "name": "Quark",
+        "hosts": ("quark.cn",),
+        "paths": ("s",),
+        "auth": "cookie",
+        "nativeStage": "share-parse",
+    },
+    "uc": {
+        "name": "UC",
+        "hosts": ("uc.cn", "ucdisk.cn", "drive.uc.cn"),
+        "paths": ("s",),
+        "auth": "cookie",
+        "nativeStage": "planned",
+    },
+    "baidu": {
+        "name": "Baidu",
+        "hosts": ("pan.baidu.com", "yun.baidu.com"),
+        "paths": ("s",),
+        "auth": "cookie",
+        "nativeStage": "planned",
+    },
+    "ali": {
+        "name": "Ali",
+        "hosts": ("aliyundrive.com", "alipan.com"),
+        "paths": ("s",),
+        "auth": "refresh-token",
+        "nativeStage": "planned",
+    },
+    "115": {
+        "name": "115",
+        "hosts": ("115.com", "anxia.com"),
+        "paths": ("s",),
+        "auth": "cookie",
+        "nativeStage": "planned",
+    },
+    "123": {
+        "name": "123",
+        "hosts": ("123pan.com", "123684.com", "123865.com", "123912.com"),
+        "paths": ("s", "share"),
+        "auth": "cookie",
+        "nativeStage": "planned",
+    },
+    "thunder": {
+        "name": "Thunder",
+        "hosts": ("xunlei.com", "pan.xunlei.com"),
+        "paths": ("s",),
+        "auth": "cookie",
+        "nativeStage": "planned",
+    },
+    "tianyi": {
+        "name": "Tianyi",
+        "hosts": ("cloud.189.cn",),
+        "paths": ("t", "web", "s"),
+        "auth": "cookie",
+        "nativeStage": "planned",
+    },
+}
+
+
 QUALITY_PRIORITY = (
     "4k",
     "uhd",
@@ -131,13 +191,44 @@ def best_direct_candidate(payload: Any) -> PlayCandidate | None:
     return ranked[0] if ranked else None
 
 
-def parse_quark_share_url(share_url: str) -> dict[str, Any]:
+def drive_providers() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": provider_id,
+            "name": config["name"],
+            "hosts": list(config["hosts"]),
+            "auth": config["auth"],
+            "nativeStage": config["nativeStage"],
+        }
+        for provider_id, config in DRIVE_PROVIDERS.items()
+    ]
+
+
+def normalize_provider(provider: str) -> str:
+    value = (provider or "").strip().lower()
+    if value not in DRIVE_PROVIDERS:
+        raise ValueError(f"unsupported drive provider: {provider}")
+    return value
+
+
+def detect_drive_provider(share_url: str) -> str:
+    host = (urlparse((share_url or "").strip()).hostname or "").lower()
+    for provider_id, config in DRIVE_PROVIDERS.items():
+        if any(host == item or host.endswith(f".{item}") for item in config["hosts"]):
+            return provider_id
+    return "other"
+
+
+def parse_drive_share_url(share_url: str, provider: str | None = None) -> dict[str, Any]:
     parsed = urlparse((share_url or "").strip())
     host = (parsed.hostname or "").lower()
     parts = [part for part in parsed.path.split("/") if part]
+    resolved_provider = provider or detect_drive_provider(share_url)
     share_id = ""
 
     if len(parts) >= 2 and parts[0] == "s":
+        share_id = parts[1]
+    elif len(parts) >= 2 and parts[0] in {"share", "t"}:
         share_id = parts[1]
     elif parts:
         share_id = parts[-1]
@@ -150,15 +241,26 @@ def parse_quark_share_url(share_url: str) -> dict[str, Any]:
         or query.get("passcode", [""])[0]
     )
 
+    provider_config = DRIVE_PROVIDERS.get(resolved_provider, {})
+    known_hosts = provider_config.get("hosts", ())
+    is_known_provider = bool(known_hosts) and any(host == item or host.endswith(f".{item}") for item in known_hosts)
+
     return {
-        "provider": "quark",
+        "provider": resolved_provider,
+        "providerName": provider_config.get("name", resolved_provider.title()),
         "shareURL": share_url,
         "host": host,
         "shareId": share_id,
         "password": password,
-        "isQuark": "quark.cn" in host,
-        "isValid": bool(share_id and "quark.cn" in host),
+        "isValid": bool(share_id and (is_known_provider or resolved_provider == "other")),
+        "nativeStage": provider_config.get("nativeStage", "planned"),
     }
+
+
+def parse_quark_share_url(share_url: str) -> dict[str, Any]:
+    result = parse_drive_share_url(share_url, "quark")
+    result["isQuark"] = result["provider"] == "quark" and result["isValid"]
+    return result
 
 
 def call_omnibox_drive_bridge(endpoint: str, payload: dict[str, Any]) -> dict[str, Any] | None:

@@ -11,10 +11,20 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, row_to_drive_account, row_to_source, row_to_subscription
-from .drive import call_omnibox_drive_bridge, normalize_quark_play_payload, parse_quark_share_url
+from .drive import (
+    call_omnibox_drive_bridge,
+    drive_providers,
+    normalize_provider,
+    normalize_quark_play_payload,
+    parse_drive_share_url,
+    parse_quark_share_url,
+)
 from .models import (
     DriveAccountPayload,
+    DriveFileListPayload,
     DrivePlayNormalizePayload,
+    DrivePlayPayload,
+    DriveSharePayload,
     QuarkFileListPayload,
     QuarkPlayPayload,
     QuarkSharePayload,
@@ -503,15 +513,30 @@ def update_setting(key: str, payload: SettingPayload):
 
 @app.get("/api/drive/quark/status")
 def quark_drive_status():
+    return drive_provider_status("quark")
+
+
+@app.get("/api/drive/providers")
+def list_drive_providers():
+    return {"items": drive_providers()}
+
+
+@app.get("/api/drive/{provider}/status")
+def drive_provider_status(provider: str):
+    try:
+        provider = normalize_provider(provider)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
     with get_conn() as conn:
         accounts = [
             account
             for account in fetch_drive_accounts(conn)
-            if account["provider"] == "quark" and account["enabled"]
+            if account["provider"] == provider and account["enabled"]
         ]
     return {
-        "provider": "quark",
-        "nativeResolver": "scaffold",
+        "provider": provider,
+        "nativeResolver": "share-parse" if provider == "quark" else "planned",
         "bridgeMode": "omnibox-fallback",
         "enabledAccounts": len(accounts),
         "ready": any(account["hasCookie"] or account["hasToken"] for account in accounts),
@@ -525,32 +550,71 @@ def quark_normalize_play(payload: DrivePlayNormalizePayload):
 
 @app.post("/api/drive/quark/share/parse")
 def quark_parse_share(payload: QuarkSharePayload):
-    return parse_quark_share_url(payload.shareURL)
+    return drive_parse_share("quark", payload)
 
 
 @app.post("/api/drive/quark/share/info")
 def quark_share_info(payload: QuarkSharePayload):
-    parsed = parse_quark_share_url(payload.shareURL)
-    if not parsed["isValid"]:
-        raise HTTPException(status_code=400, detail="invalid Quark share URL")
-
-    bridged = call_omnibox_drive_bridge("/drive/info", {"shareURL": payload.shareURL})
-    if bridged is None:
-        return {
-            "provider": "quark",
-            "mode": "native-scaffold",
-            "share": parsed,
-            "ready": False,
-            "message": "Quark native share info resolver is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
-        }
-    return {"provider": "quark", "mode": "omnibox-fallback", "share": parsed, "data": bridged}
+    return drive_share_info("quark", payload)
 
 
 @app.post("/api/drive/quark/share/files")
 def quark_share_files(payload: QuarkFileListPayload):
-    parsed = parse_quark_share_url(payload.shareURL)
+    return drive_share_files("quark", payload)
+
+
+@app.post("/api/drive/quark/share/play")
+def quark_share_play(payload: QuarkPlayPayload):
+    return drive_share_play("quark", payload)
+
+
+@app.post("/api/drive/share/parse")
+def auto_parse_drive_share(payload: DriveSharePayload):
+    return parse_drive_share_url(payload.shareURL)
+
+
+@app.post("/api/drive/{provider}/share/parse")
+def drive_parse_share(provider: str, payload: DriveSharePayload):
+    try:
+        provider = normalize_provider(provider)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    if provider == "quark":
+        return parse_quark_share_url(payload.shareURL)
+    return parse_drive_share_url(payload.shareURL, provider)
+
+
+@app.post("/api/drive/{provider}/share/info")
+def drive_share_info(provider: str, payload: DriveSharePayload):
+    try:
+        provider = normalize_provider(provider)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    parsed = parse_drive_share_url(payload.shareURL, provider)
     if not parsed["isValid"]:
-        raise HTTPException(status_code=400, detail="invalid Quark share URL")
+        raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
+
+    bridged = call_omnibox_drive_bridge("/drive/info", {"shareURL": payload.shareURL})
+    if bridged is None:
+        return {
+            "provider": provider,
+            "mode": "native-scaffold",
+            "share": parsed,
+            "ready": False,
+            "message": f"{provider} native share info resolver is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
+        }
+    return {"provider": provider, "mode": "omnibox-fallback", "share": parsed, "data": bridged}
+
+
+@app.post("/api/drive/{provider}/share/files")
+def drive_share_files(provider: str, payload: DriveFileListPayload):
+    try:
+        provider = normalize_provider(provider)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    parsed = parse_drive_share_url(payload.shareURL, provider)
+    if not parsed["isValid"]:
+        raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
 
     bridged = call_omnibox_drive_bridge(
         "/drive/file-list",
@@ -558,22 +622,26 @@ def quark_share_files(payload: QuarkFileListPayload):
     )
     if bridged is None:
         return {
-            "provider": "quark",
+            "provider": provider,
             "mode": "native-scaffold",
             "share": parsed,
             "files": [],
             "total": 0,
             "hasMore": False,
-            "message": "Quark native file listing is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
+            "message": f"{provider} native file listing is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
         }
-    return {"provider": "quark", "mode": "omnibox-fallback", "share": parsed, "data": bridged}
+    return {"provider": provider, "mode": "omnibox-fallback", "share": parsed, "data": bridged}
 
 
-@app.post("/api/drive/quark/share/play")
-def quark_share_play(payload: QuarkPlayPayload):
-    parsed = parse_quark_share_url(payload.shareURL)
+@app.post("/api/drive/{provider}/share/play")
+def drive_share_play(provider: str, payload: DrivePlayPayload):
+    try:
+        provider = normalize_provider(provider)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    parsed = parse_drive_share_url(payload.shareURL, provider)
     if not parsed["isValid"]:
-        raise HTTPException(status_code=400, detail="invalid Quark share URL")
+        raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
 
     bridged = call_omnibox_drive_bridge(
         "/drive/video-play-info",
@@ -586,14 +654,14 @@ def quark_share_play(payload: QuarkPlayPayload):
     )
     if bridged is None:
         return {
-            "provider": "quark",
+            "provider": provider,
             "mode": "native-scaffold",
             "share": parsed,
             "ready": False,
-            "message": "Quark native play resolver is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
+            "message": f"{provider} native play resolver is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
         }
     return {
-        "provider": "quark",
+        "provider": provider,
         "mode": "omnibox-fallback",
         "share": parsed,
         "raw": bridged,

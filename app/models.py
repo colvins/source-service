@@ -31,7 +31,7 @@ class SettingPayload(BaseModel):
 
 class DriveAccountPayload(BaseModel):
     name: str
-    provider: str = Field(pattern="^(quark|uc|baidu|ali|115|other)$")
+    provider: str = Field(pattern="^(quark|uc|baidu|ali|115|123|thunder|tianyi|other)$")
     enabled: bool = True
     sortOrder: int = 0
     cookie: str = ""
@@ -44,17 +44,29 @@ class DrivePlayNormalizePayload(BaseModel):
     payload: Any
 
 
-class QuarkSharePayload(BaseModel):
+class DriveSharePayload(BaseModel):
     shareURL: str
 
 
-class QuarkFileListPayload(BaseModel):
+class DriveFileListPayload(BaseModel):
     shareURL: str
     pdirFid: str = "0"
 
 
-class QuarkPlayPayload(BaseModel):
+class DrivePlayPayload(BaseModel):
     shareURL: str
     fid: str
     flag: str = ""
     getTranscodeUrls: bool = True
+
+
+class QuarkSharePayload(DriveSharePayload):
+    pass
+
+
+class QuarkFileListPayload(DriveFileListPayload):
+    pass
+
+
+class QuarkPlayPayload(DrivePlayPayload):
+    pass
