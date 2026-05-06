@@ -276,7 +276,7 @@ def export_tvbox(subscription: dict[str, Any], base_url: str) -> dict[str, Any]:
             {
                 "key": f"source_{source['id']}",
                 "name": source["name"],
-                "type": 3,
+                "type": 1,
                 "api": f"{base_url}/api/tvbox/source/{source['id']}",
                 "searchable": 1,
                 "changeable": 1,
@@ -405,6 +405,68 @@ def _runtime_envelope(payload: dict[str, Any]) -> JSONResponse:
 def _runtime_raw(source_id: int, action: str, params: dict[str, Any], request: Request) -> JSONResponse:
     with get_conn() as conn:
         return JSONResponse(_normalize_runtime_payload(execute_source(conn, source_id, action, params, _base_url_from_request(request))))
+
+
+def _tvbox_detail_payload(source_id: int, payload: Any, request: Request) -> Any:
+    payload = _normalize_runtime_payload(payload)
+    if not isinstance(payload, dict):
+        return payload
+
+    items = payload.get("list")
+    if not isinstance(items, list):
+        return payload
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        play_from = str(item.get("vod_play_from") or "")
+        play_url = str(item.get("vod_play_url") or "")
+        if not play_from or not play_url:
+            continue
+        flags = play_from.split("$$$")
+        groups = play_url.split("$$$")
+        item["vod_play_url"] = "$$$".join(
+            _tvbox_episode_group(source_id, flag, group, request)
+            for flag, group in zip(flags, groups)
+        )
+    return payload
+
+
+def _tvbox_episode_group(source_id: int, flag: str, group: str, request: Request) -> str:
+    episodes: list[str] = []
+    for episode in group.split("#"):
+        if "$" not in episode:
+            continue
+        name, play_id = episode.split("$", 1)
+        cleaned = _tvbox_direct_play_url(play_id)
+        if cleaned:
+            episodes.append(f"{name}${cleaned}")
+        else:
+            base_url = _base_url_from_request(request)
+            episodes.append(f"{name}${base_url}/api/tvbox/source/{source_id}/play-url?flag={quote_url_value(flag)}&id={quote_url_value(play_id)}")
+    return "#".join(episodes)
+
+
+def _tvbox_direct_play_url(play_id: str) -> str | None:
+    from urllib.parse import unquote
+
+    candidate = unquote(str(play_id or "").split("|||", 1)[0]).strip()
+    if candidate.startswith("push://"):
+        candidate = candidate.removeprefix("push://").strip()
+    if not candidate.startswith(("http://", "https://")):
+        return None
+    lowered = candidate.lower()
+    if "127.0.0.1" in lowered or "localhost" in lowered or "/proxy" in lowered:
+        return None
+    if "pan.quark.cn/s/" in lowered or "pan.baidu.com/" in lowered:
+        return None
+    return candidate
+
+
+def quote_url_value(value: str) -> str:
+    from urllib.parse import quote
+
+    return quote(str(value or ""), safe="")
 
 
 @app.get("/health")
@@ -1388,6 +1450,35 @@ def runtime_v1_play(source_id: int, request: Request, flag: str = "", playId: st
     return runtime_play(source_id, request, flag, playId, id)
 
 
+@app.get("/api/tvbox/source/{source_id}")
+def runtime_tvbox_json(
+    source_id: int,
+    request: Request,
+    ac: str = "",
+    t: str = "",
+    tid: str = "",
+    id: str = "",
+    ids: str = "",
+    wd: str = "",
+    keyword: str = "",
+    pg: int = 1,
+    page: int = 1,
+):
+    action = ac.lower().strip()
+    resolved_page = page or pg or 1
+    if wd or keyword:
+        return runtime_tvbox_search(source_id, request, wd, keyword, pg, page)
+    if action in ("videolist", "category"):
+        resolved_category_id = t or tid or id
+        return runtime_tvbox_category(source_id, request, resolved_category_id, resolved_category_id, pg, page)
+    if action == "detail":
+        resolved_video_id = ids or id
+        return runtime_tvbox_detail(source_id, request, resolved_video_id, resolved_video_id, resolved_video_id)
+    if action == "play":
+        return runtime_tvbox_play(source_id, request, "", id, id)
+    return runtime_tvbox_home(source_id, request)
+
+
 @app.get("/api/tvbox/source/{source_id}/home")
 def runtime_tvbox_home(source_id: int, request: Request):
     return _runtime_raw(source_id, "home", {}, request)
@@ -1420,12 +1511,15 @@ def runtime_tvbox_search(source_id: int, request: Request, wd: str = "", keyword
 @app.get("/api/tvbox/source/{source_id}/detail")
 def runtime_tvbox_detail(source_id: int, request: Request, id: str = "", ids: str = "", videoId: str = ""):
     resolved_video_id = videoId or id or ids
-    return _runtime_raw(
-        source_id,
-        "detail",
-        {"videoId": resolved_video_id, "id": resolved_video_id, "ids": resolved_video_id},
-        request,
-    )
+    with get_conn() as conn:
+        payload = execute_source(
+            conn,
+            source_id,
+            "detail",
+            {"videoId": resolved_video_id, "id": resolved_video_id, "ids": resolved_video_id},
+            _base_url_from_request(request),
+        )
+    return JSONResponse(_tvbox_detail_payload(source_id, payload, request))
 
 
 @app.get("/api/tvbox/source/{source_id}/play")
@@ -1437,3 +1531,29 @@ def runtime_tvbox_play(source_id: int, request: Request, flag: str = "", id: str
         {"flag": flag, "playId": resolved_play_id, "id": resolved_play_id},
         request,
     )
+
+
+@app.get("/api/tvbox/source/{source_id}/play-url")
+def runtime_tvbox_play_url(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = ""):
+    resolved_play_id = playId or id
+    with get_conn() as conn:
+        payload = _normalize_runtime_payload(execute_source(
+            conn,
+            source_id,
+            "play",
+            {"flag": flag, "playId": resolved_play_id, "id": resolved_play_id},
+            _base_url_from_request(request),
+        ))
+    if isinstance(payload, dict):
+        url = _tvbox_direct_play_url(str(payload.get("url") or ""))
+        if not url:
+            urls = payload.get("urls")
+            if isinstance(urls, list):
+                for item in urls:
+                    if isinstance(item, dict):
+                        url = _tvbox_direct_play_url(str(item.get("url") or ""))
+                        if url:
+                            break
+        if url:
+            return RedirectResponse(url)
+    raise HTTPException(status_code=422, detail="no direct playable URL")
