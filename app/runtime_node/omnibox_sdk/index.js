@@ -1,5 +1,6 @@
 const CONTEXT = JSON.parse(process.env.COLVINS_CONTEXT || "{}");
 const API_BASE_URL = process.env.COLVINS_SOURCE_API_URL || CONTEXT.baseURL || process.env.OMNIBOX_API_URL || "";
+const driveFolderPathCache = new Map();
 
 async function callAPI(endpoint, data = {}) {
   if (!API_BASE_URL) {
@@ -81,15 +82,24 @@ function decodeDriveFileRef(value) {
   }
 }
 
-function toOmniBoxDriveFile(file, pdirFid = "0") {
+function driveFolderCacheKey(shareURL, fid) {
+  return `${shareURL}::${fid || "0"}`;
+}
+
+function toOmniBoxDriveFile(shareURL, file, pdirFid = "0") {
   const isDir = Boolean(file && file.isDir);
+  const parentPath = driveFolderPathCache.get(driveFolderCacheKey(shareURL, pdirFid)) || "";
+  const filePath = [parentPath, file.path || file.name || ""].filter(Boolean).join("/");
   const ref = {
     fid: file.fid || "",
     name: file.name || "",
-    path: file.path || "",
+    path: filePath,
     shareFidToken: file.shareFidToken || "",
     parentFid: pdirFid || "0",
   };
+  if (isDir && ref.fid) {
+    driveFolderPathCache.set(driveFolderCacheKey(shareURL, ref.fid), filePath);
+  }
   const fileId = isDir ? ref.fid : encodeDriveFileRef(ref);
   return {
     ...file,
@@ -107,7 +117,7 @@ function toOmniBoxDriveFile(file, pdirFid = "0") {
     format_type: file.isVideo ? "video" : "",
     share_fid_token: file.shareFidToken || "",
     pdir_fid: pdirFid || "0",
-    path: file.path || "",
+    path: filePath,
   };
 }
 
@@ -184,7 +194,7 @@ async function getDriveInfoByShareURL(shareURL) {
 async function getDriveFileList(shareURL, pdirFid = "0") {
   const provider = driveProviderFromShareURL(shareURL);
   const result = await callSourceService(`/api/drive/${provider}/share/files`, { shareURL, pdirFid });
-  const files = (result.files || []).map((file) => toOmniBoxDriveFile(file, pdirFid));
+  const files = (result.files || []).map((file) => toOmniBoxDriveFile(shareURL, file, pdirFid));
   return { files, total: files.length, has_more: false, raw: result };
 }
 
