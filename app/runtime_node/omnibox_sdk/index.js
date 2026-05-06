@@ -81,14 +81,14 @@ function decodeDriveFileRef(value) {
   }
 }
 
-function toOmniBoxDriveFile(file) {
+function toOmniBoxDriveFile(file, pdirFid = "0") {
   const isDir = Boolean(file && file.isDir);
   const ref = {
     fid: file.fid || "",
     name: file.name || "",
     path: file.path || "",
     shareFidToken: file.shareFidToken || "",
-    parentFid: file.parentFid || "0",
+    parentFid: pdirFid || "0",
   };
   const fileId = isDir ? ref.fid : encodeDriveFileRef(ref);
   return {
@@ -106,7 +106,7 @@ function toOmniBoxDriveFile(file) {
     file_type: isDir ? "folder" : "file",
     format_type: file.isVideo ? "video" : "",
     share_fid_token: file.shareFidToken || "",
-    pdir_fid: file.parentFid || "0",
+    pdir_fid: pdirFid || "0",
     path: file.path || "",
   };
 }
@@ -184,7 +184,7 @@ async function getDriveInfoByShareURL(shareURL) {
 async function getDriveFileList(shareURL, pdirFid = "0") {
   const provider = driveProviderFromShareURL(shareURL);
   const result = await callSourceService(`/api/drive/${provider}/share/files`, { shareURL, pdirFid });
-  const files = (result.files || []).map(toOmniBoxDriveFile);
+  const files = (result.files || []).map((file) => toOmniBoxDriveFile(file, pdirFid));
   return { files, total: files.length, has_more: false, raw: result };
 }
 
