@@ -16,8 +16,11 @@ from .drive import (
     drive_providers,
     normalize_provider,
     normalize_quark_play_payload,
+    normalize_drive_files,
     parse_drive_share_url,
     parse_quark_share_url,
+    select_best_video_file,
+    video_files_from_payload,
 )
 from .models import (
     DriveAccountPayload,
@@ -25,6 +28,7 @@ from .models import (
     DrivePlayNormalizePayload,
     DrivePlayPayload,
     DriveSharePayload,
+    DriveVideosPayload,
     QuarkFileListPayload,
     QuarkPlayPayload,
     QuarkSharePayload,
@@ -251,6 +255,22 @@ def create_drive_account_form(
 def update_setting_form(key: str = Form(...), value: str = Form("")):
     update_setting(key, SettingPayload(value=value))
     return RedirectResponse(url="/#settings", status_code=303)
+
+
+@app.get("/drive-test", response_class=HTMLResponse)
+def drive_test_page(provider: str = "quark", shareURL: str = ""):
+    if not shareURL:
+        return HTMLResponse("<pre>Missing shareURL.</pre>", status_code=400)
+    try:
+        result = drive_share_play_best(
+            provider,
+            DriveVideosPayload(shareURL=shareURL, recursive=True, maxDepth=3, maxItems=80),
+        )
+        body = json.dumps(result, ensure_ascii=False, indent=2)
+        return HTMLResponse(f"<pre>{body}</pre>")
+    except Exception as error:
+        body = json.dumps({"error": str(error)}, ensure_ascii=False, indent=2)
+        return HTMLResponse(f"<pre>{body}</pre>", status_code=500)
 
 
 @app.get("/api/admin/sources")
@@ -630,7 +650,13 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
             "hasMore": False,
             "message": f"{provider} native file listing is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
         }
-    return {"provider": provider, "mode": "omnibox-fallback", "share": parsed, "data": bridged}
+    return {
+        "provider": provider,
+        "mode": "omnibox-fallback",
+        "share": parsed,
+        "data": bridged,
+        "files": normalize_drive_files(bridged),
+    }
 
 
 @app.post("/api/drive/{provider}/share/play")
@@ -666,6 +692,83 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
         "share": parsed,
         "raw": bridged,
         "play": normalize_quark_play_payload(bridged),
+    }
+
+
+@app.post("/api/drive/quark/share/videos")
+def quark_share_videos(payload: DriveVideosPayload):
+    return drive_share_videos("quark", payload)
+
+
+@app.post("/api/drive/{provider}/share/videos")
+def drive_share_videos(provider: str, payload: DriveVideosPayload):
+    try:
+        provider = normalize_provider(provider)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    parsed = parse_drive_share_url(payload.shareURL, provider)
+    if not parsed["isValid"]:
+        raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
+
+    collected: list[dict[str, Any]] = []
+    visited: set[str] = set()
+
+    def visit(folder_id: str, depth: int, parent_path: str = "") -> None:
+        if len(collected) >= payload.maxItems or depth > payload.maxDepth or folder_id in visited:
+            return
+        visited.add(folder_id)
+        bridged = call_omnibox_drive_bridge(
+            "/drive/file-list",
+            {"shareURL": payload.shareURL, "pdirFid": folder_id},
+        )
+        if bridged is None:
+            return
+        files = normalize_drive_files(bridged, parent_path)
+        for item in files:
+            if item["isVideo"]:
+                collected.append(item)
+                if len(collected) >= payload.maxItems:
+                    return
+            elif payload.recursive and item["isDir"] and item["fid"]:
+                visit(str(item["fid"]), depth + 1, item["path"])
+
+    visit(payload.pdirFid, 0)
+    return {
+        "provider": provider,
+        "mode": "omnibox-fallback",
+        "share": parsed,
+        "videoCount": len(collected),
+        "videos": collected[: payload.maxItems],
+    }
+
+
+@app.post("/api/drive/quark/share/play-best")
+def quark_share_play_best(payload: DriveVideosPayload):
+    return drive_share_play_best("quark", payload)
+
+
+@app.post("/api/drive/{provider}/share/play-best")
+def drive_share_play_best(provider: str, payload: DriveVideosPayload):
+    videos_payload = drive_share_videos(provider, payload)
+    best_file = select_best_video_file(videos_payload["videos"])
+    if best_file is None:
+        return {
+            **videos_payload,
+            "ready": False,
+            "message": "No playable video file found in this share.",
+        }
+
+    play_payload = DrivePlayPayload(
+        shareURL=payload.shareURL,
+        fid=best_file["fid"],
+        flag=best_file["name"],
+        getTranscodeUrls=True,
+    )
+    play = drive_share_play(provider, play_payload)
+    return {
+        **videos_payload,
+        "selectedFile": best_file,
+        "play": play["play"] if isinstance(play, dict) and "play" in play else play,
     }
 
 

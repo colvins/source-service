@@ -77,12 +77,20 @@ POST /api/drive/share/parse
 POST /api/drive/{provider}/share/parse
 POST /api/drive/{provider}/share/info
 POST /api/drive/{provider}/share/files
+POST /api/drive/{provider}/share/videos
 POST /api/drive/{provider}/share/play
+POST /api/drive/{provider}/share/play-best
 POST /api/drive/quark/share/parse
 POST /api/drive/quark/share/info
 POST /api/drive/quark/share/files
 POST /api/drive/quark/share/play
 POST /api/drive/quark/normalize-play
+```
+
+网页测试入口：
+
+```text
+GET /drive-test?provider=quark&shareURL=...
 ```
 
 ## 当前限制

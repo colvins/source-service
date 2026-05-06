@@ -80,6 +80,20 @@ QUALITY_PRIORITY = (
     "raw",
 )
 
+VIDEO_EXTENSIONS = (
+    ".mp4",
+    ".mkv",
+    ".m3u8",
+    ".mov",
+    ".avi",
+    ".flv",
+    ".ts",
+    ".wmv",
+    ".webm",
+    ".mpg",
+    ".mpeg",
+)
+
 
 @dataclass
 class PlayCandidate:
@@ -281,6 +295,80 @@ def call_omnibox_drive_bridge(endpoint: str, payload: dict[str, Any]) -> dict[st
     if result.get("success") is False:
         raise RuntimeError(result.get("message") or f"bridge call failed: {endpoint}")
     return result.get("data") if isinstance(result, dict) and "data" in result else result
+
+
+def _first_value(item: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+    return ""
+
+
+def _raw_file_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("files", "list", "items", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        if isinstance(value, dict):
+            nested = _raw_file_items(value)
+            if nested:
+                return nested
+    return []
+
+
+def normalize_drive_file(item: dict[str, Any], parent_path: str = "") -> dict[str, Any]:
+    name = str(_first_value(item, ("name", "file_name", "filename", "title")) or "")
+    fid = str(_first_value(item, ("fid", "fileId", "file_id", "id", "fs_id")) or "")
+    raw_type = str(_first_value(item, ("type", "file_type", "category")) or "").lower()
+    is_dir = bool(_first_value(item, ("isDir", "is_dir", "dir", "folder")))
+    if raw_type in {"folder", "dir", "directory"}:
+        is_dir = True
+    path = f"{parent_path}/{name}".strip("/") if name else parent_path
+    ext = f".{name.rsplit('.', 1)[-1].lower()}" if "." in name else ""
+    is_video = (not is_dir) and (ext in VIDEO_EXTENSIONS or raw_type in {"video", "movie"})
+    return {
+        "fid": fid,
+        "name": name,
+        "path": path,
+        "size": _first_value(item, ("size", "file_size", "bytes")) or 0,
+        "type": "folder" if is_dir else raw_type or "file",
+        "isDir": is_dir,
+        "isVideo": is_video,
+        "raw": item,
+    }
+
+
+def normalize_drive_files(payload: Any, parent_path: str = "") -> list[dict[str, Any]]:
+    return [normalize_drive_file(item, parent_path) for item in _raw_file_items(payload)]
+
+
+def video_files_from_payload(payload: Any, parent_path: str = "") -> list[dict[str, Any]]:
+    return [item for item in normalize_drive_files(payload, parent_path) if item["isVideo"]]
+
+
+def select_best_video_file(files: list[dict[str, Any]]) -> dict[str, Any] | None:
+    videos = [item for item in files if item.get("isVideo")]
+    if not videos:
+        return None
+
+    def score(item: dict[str, Any]) -> tuple[int, int, str]:
+        name = str(item.get("name") or "").lower()
+        priority = 5
+        if "4k" in name or "2160" in name:
+            priority = 0
+        elif "1080" in name or "fhd" in name:
+            priority = 1
+        elif "720" in name:
+            priority = 2
+        size = int(item.get("size") or 0)
+        return (priority, -size, name)
+
+    return sorted(videos, key=score)[0]
 
 
 def normalize_quark_play_payload(payload: Any) -> dict[str, Any]:

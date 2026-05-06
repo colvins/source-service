@@ -60,6 +60,14 @@ class DrivePlayPayload(BaseModel):
     getTranscodeUrls: bool = True
 
 
+class DriveVideosPayload(BaseModel):
+    shareURL: str
+    pdirFid: str = "0"
+    recursive: bool = True
+    maxDepth: int = 3
+    maxItems: int = 200
+
+
 class QuarkSharePayload(DriveSharePayload):
     pass
 

@@ -230,6 +230,27 @@ TVBox:
       </form>
     </section>
 
+    <section id="drive-test" class="section card">
+      <h2>网盘分享测试</h2>
+      <p class="muted">输入分享链接后，服务会扫描视频文件，选择最适合的文件，并返回最终直链候选。当前优先 Quark，其他网盘入口已预留。</p>
+      <form method="get" action="/drive-test">
+        <label>网盘类型</label>
+        <select name="provider">
+          <option value="quark">Quark</option>
+          <option value="uc">UC</option>
+          <option value="baidu">Baidu</option>
+          <option value="ali">Ali</option>
+          <option value="115">115</option>
+          <option value="123">123</option>
+          <option value="thunder">Thunder</option>
+          <option value="tianyi">Tianyi</option>
+        </select>
+        <label>分享链接</label>
+        <input name="shareURL" placeholder="https://pan.quark.cn/s/..." />
+        <div style="margin-top:14px;"><button type="submit">扫描并测试播放</button></div>
+      </form>
+    </section>
+
     <section id="runtime-debug" class="section card">
       <h2>运行时调试入口</h2>
       <pre>GET  /api/runtime/source/{sourceId}/home
@@ -246,11 +267,15 @@ POST /api/drive/share/parse
 POST /api/drive/{provider}/share/parse
 POST /api/drive/{provider}/share/info
 POST /api/drive/{provider}/share/files
+POST /api/drive/{provider}/share/videos
 POST /api/drive/{provider}/share/play
+POST /api/drive/{provider}/share/play-best
 POST /api/drive/quark/share/parse
 POST /api/drive/quark/share/info
 POST /api/drive/quark/share/files
-POST /api/drive/quark/share/play</pre>
+POST /api/drive/quark/share/videos
+POST /api/drive/quark/share/play
+POST /api/drive/quark/share/play-best</pre>
     </section>
 
     <section id="settings" class="section card">
