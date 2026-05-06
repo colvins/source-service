@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
@@ -66,6 +67,10 @@ DRIVE_PROVIDERS: dict[str, dict[str, Any]] = {
         "nativeStage": "planned",
     },
 }
+
+
+class DriveBridgeError(RuntimeError):
+    pass
 
 
 QUALITY_PRIORITY = (
@@ -289,11 +294,17 @@ def call_omnibox_drive_bridge(endpoint: str, payload: dict[str, Any]) -> dict[st
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(request, timeout=60) as response:
-        raw = response.read().decode("utf-8")
+    try:
+        with urlopen(request, timeout=60) as response:
+            raw = response.read().decode("utf-8")
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise DriveBridgeError(f"bridge HTTP {error.code}: {detail[:240]}") from error
+    except URLError as error:
+        raise DriveBridgeError(f"bridge unavailable: {error.reason}") from error
     result = json.loads(raw or "{}")
     if result.get("success") is False:
-        raise RuntimeError(result.get("message") or f"bridge call failed: {endpoint}")
+        raise DriveBridgeError(result.get("message") or f"bridge call failed: {endpoint}")
     return result.get("data") if isinstance(result, dict) and "data" in result else result
 
 

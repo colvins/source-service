@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from .db import get_conn, init_db, row_to_drive_account, row_to_source, row_to_subscription
 from .drive import (
+    DriveBridgeError,
     call_omnibox_drive_bridge,
     drive_providers,
     normalize_provider,
@@ -636,10 +637,22 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
     if not parsed["isValid"]:
         raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
 
-    bridged = call_omnibox_drive_bridge(
-        "/drive/file-list",
-        {"shareURL": payload.shareURL, "pdirFid": payload.pdirFid},
-    )
+    try:
+        bridged = call_omnibox_drive_bridge(
+            "/drive/file-list",
+            {"shareURL": payload.shareURL, "pdirFid": payload.pdirFid},
+        )
+    except DriveBridgeError as error:
+        return {
+            "provider": provider,
+            "mode": "omnibox-fallback",
+            "share": parsed,
+            "files": [],
+            "total": 0,
+            "hasMore": False,
+            "ready": False,
+            "message": str(error),
+        }
     if bridged is None:
         return {
             "provider": provider,
@@ -669,15 +682,24 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
     if not parsed["isValid"]:
         raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
 
-    bridged = call_omnibox_drive_bridge(
-        "/drive/video-play-info",
-        {
-            "shareURL": payload.shareURL,
-            "fid": payload.fid,
-            "flag": payload.flag,
-            "getTranscodeUrls": payload.getTranscodeUrls,
-        },
-    )
+    try:
+        bridged = call_omnibox_drive_bridge(
+            "/drive/video-play-info",
+            {
+                "shareURL": payload.shareURL,
+                "fid": payload.fid,
+                "flag": payload.flag,
+                "getTranscodeUrls": payload.getTranscodeUrls,
+            },
+        )
+    except DriveBridgeError as error:
+        return {
+            "provider": provider,
+            "mode": "omnibox-fallback",
+            "share": parsed,
+            "ready": False,
+            "message": str(error),
+        }
     if bridged is None:
         return {
             "provider": provider,
@@ -717,10 +739,13 @@ def drive_share_videos(provider: str, payload: DriveVideosPayload):
         if len(collected) >= payload.maxItems or depth > payload.maxDepth or folder_id in visited:
             return
         visited.add(folder_id)
-        bridged = call_omnibox_drive_bridge(
-            "/drive/file-list",
-            {"shareURL": payload.shareURL, "pdirFid": folder_id},
-        )
+        try:
+            bridged = call_omnibox_drive_bridge(
+                "/drive/file-list",
+                {"shareURL": payload.shareURL, "pdirFid": folder_id},
+            )
+        except DriveBridgeError:
+            return
         if bridged is None:
             return
         files = normalize_drive_files(bridged, parent_path)
