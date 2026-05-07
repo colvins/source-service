@@ -362,3 +362,17 @@ class QuarkClient:
             },
         )
         return payload, {"User-Agent": self.user_agent, "Referer": "https://pan.quark.cn/", "Cookie": self.cookie}
+
+    def download_url(self, fid: str) -> str:
+        payload = self._request(
+            "POST",
+            "file/download",
+            body={"fids": [fid]},
+        )
+        items = payload.get("data") or []
+        if not isinstance(items, list) or not items:
+            raise QuarkNativeError("Quark raw download URL is empty.")
+        url = str((items[0] or {}).get("download_url") or "").strip()
+        if not url:
+            raise QuarkNativeError("Quark raw download URL is empty.")
+        return url

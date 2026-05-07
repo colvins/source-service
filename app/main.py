@@ -162,6 +162,16 @@ def _quark_saved_fids_from_task(client: QuarkClient, save: dict[str, Any]) -> li
 def _quark_play_candidates_for_saved_fid(client: QuarkClient, saved_fid: str, fallback_name: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
     video_play, headers = client.video_play_urls(saved_fid)
     play_candidates: list[dict[str, Any]] = []
+    try:
+        play_candidates.append(
+            {
+                "name": "raw",
+                "url": client.download_url(saved_fid),
+                "header": headers,
+            }
+        )
+    except QuarkNativeError as error:
+        video_play.setdefault("colvins", {})["rawError"] = str(error)[:240]
     video_data = video_play.get("data") or {}
     video_items = video_data.get("video_list") or video_data.get("videoList") or []
     for item in video_items:
