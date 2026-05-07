@@ -398,8 +398,16 @@ def _normalize_play_result(payload: Any) -> Any:
 
     normalized = {key: _normalize_play_result(value) for key, value in payload.items()}
     urls = normalized.get("urls")
-    if isinstance(urls, list) and urls and not normalized.get("url"):
+    url_value = normalized.get("url")
+    url_is_playable_string = isinstance(url_value, str) and bool(url_value.strip())
+    if not url_is_playable_string and isinstance(url_value, list):
+        urls = url_value if not isinstance(urls, list) else urls
+    if isinstance(urls, list) and urls and not url_is_playable_string:
         first = next((item for item in urls if isinstance(item, dict) and item.get("url")), None)
+        if first is None:
+            first_text = next((item for item in urls if isinstance(item, str) and item.strip()), None)
+            if first_text:
+                normalized["url"] = first_text
         if first:
             normalized["url"] = first.get("url")
             if not normalized.get("header") and isinstance(first.get("header"), dict):
