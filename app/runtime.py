@@ -6,9 +6,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-RUNTIME_DIR = Path("/app/data/runtime")
-JS_SHIM_DIR = Path("/app/app/runtime_node")
-PY_SHIM_DIR = Path("/app/app/runtime_py")
+BASE_DIR = Path(__file__).resolve().parent
+APP_ROOT = BASE_DIR.parent
+RUNTIME_DIR = Path(os.environ.get("COLVINS_RUNTIME_DIR", str(APP_ROOT / ".runtime")))
+JS_SHIM_DIR = Path(os.environ.get("COLVINS_JS_SHIM_DIR", str(BASE_DIR / "runtime_node")))
+PY_SHIM_DIR = Path(os.environ.get("COLVINS_PY_SHIM_DIR", str(BASE_DIR / "runtime_py")))
 NODE_GLOBAL_MODULE_DIR = Path("/usr/local/lib/node_modules")
 
 
@@ -51,7 +53,7 @@ def _execute_js(script_content: str, action: str, params: dict[str, Any], contex
     os.close(script_fd)
     Path(script_path).write_text(script_content, encoding="utf-8")
 
-    runner_path = Path("/app/app/runtime_js_runner.js")
+    runner_path = Path(os.environ.get("COLVINS_JS_RUNNER", str(BASE_DIR / "runtime_js_runner.js")))
     env = os.environ.copy()
     env["NODE_PATH"] = f"{JS_SHIM_DIR}:{NODE_GLOBAL_MODULE_DIR}:{env.get('NODE_PATH', '')}".rstrip(":")
     env["COLVINS_ACTION"] = action
@@ -80,7 +82,7 @@ def _execute_python(script_content: str, action: str, params: dict[str, Any], co
     os.close(script_fd)
     Path(script_path).write_text(script_content, encoding="utf-8")
 
-    runner_path = Path("/app/app/runtime_py_runner.py")
+    runner_path = Path(os.environ.get("COLVINS_PY_RUNNER", str(BASE_DIR / "runtime_py_runner.py")))
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{PY_SHIM_DIR}:{env.get('PYTHONPATH', '')}".rstrip(":")
     env["COLVINS_ACTION"] = action

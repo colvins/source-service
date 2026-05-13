@@ -53,6 +53,12 @@ TVBox：
 http://your-host:8788/api/subscription/{subscriptionId}/tvbox?token={subscriptionToken}
 ```
 
+TVBox 播放说明：
+
+- 订阅导出会附带 `colvins-tvbox-spider.jar`
+- 点播播放通过 TVBox 本地 jar 代理直连远端媒体
+- source-service 只返回最终播放地址和请求头，不中转视频字节
+
 ## 网盘能力现状
 
 当前版本已经提供：

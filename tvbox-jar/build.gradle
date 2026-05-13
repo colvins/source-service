@@ -1,0 +1,53 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.colvins.tvbox'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+sourceSets {
+    stub {
+        java.srcDir 'src/stub/java'
+    }
+    main {
+        compileClasspath += sourceSets.stub.output
+        runtimeClasspath += sourceSets.stub.output
+    }
+}
+
+configurations {
+    stubImplementation.extendsFrom implementation
+}
+
+dependencies {
+    implementation 'com.google.code.gson:gson:2.10.1'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+jar {
+    archiveBaseName = 'colvins-tvbox-spider'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes(
+            'Implementation-Title': 'Colvins TVBox Spider',
+            'Implementation-Version': project.version
+        )
+    }
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    exclude('android/**')
+    exclude('com/github/catvod/crawler/**')
+}

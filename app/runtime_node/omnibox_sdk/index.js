@@ -198,18 +198,39 @@ async function getDriveFileList(shareURL, pdirFid = "0") {
   return { files, total: files.length, has_more: false, raw: result };
 }
 
+async function refreshDriveFileRef(shareURL, file) {
+  if (!file || typeof file !== "object") return file || {};
+  const parentFid = file.parentFid || file.pdirFid || "0";
+  try {
+    const listing = await getDriveFileList(shareURL, parentFid);
+    const files = Array.isArray(listing.files) ? listing.files : [];
+    const match = files.find((item) => {
+      if (!item || item.isDir) return false;
+      if (file.raw_fid && item.raw_fid && item.raw_fid === file.raw_fid) return true;
+      if (file.fid && item.raw_fid && item.raw_fid === file.fid) return true;
+      if (file.name && item.name === file.name && parentFid === (item.parentFid || item.pdirFid || "0")) return true;
+      if (file.path && item.path === file.path) return true;
+      return false;
+    });
+    return match || file;
+  } catch {
+    return file;
+  }
+}
+
 async function getDriveVideoPlayInfo(shareURL, fileOrFid, flag = "", getTranscodeUrls = true) {
   const provider = driveProviderFromShareURL(shareURL);
   const decoded = typeof fileOrFid === "string" ? decodeDriveFileRef(fileOrFid) : null;
   const file = decoded || (typeof fileOrFid === "object" && fileOrFid ? fileOrFid : {});
-  const fid = file.raw_fid || file.fid || file.id || fileOrFid;
+  const freshFile = await refreshDriveFileRef(shareURL, file);
+  const fid = freshFile.raw_fid || freshFile.fid || freshFile.id || file.raw_fid || file.fid || file.id || fileOrFid;
   const result = await callSourceService(`/api/drive/${provider}/share/play`, {
     shareURL,
     fid,
-    flag: flag || file.name || "",
-    filePath: file.path || "",
-    shareFidToken: file.shareFidToken || file.share_fid_token || "",
-    pdirFid: file.parentFid || file.pdirFid || "0",
+    flag: flag || freshFile.name || file.name || "",
+    filePath: freshFile.path || file.path || "",
+    shareFidToken: freshFile.shareFidToken || freshFile.share_fid_token || file.shareFidToken || file.share_fid_token || "",
+    pdirFid: freshFile.parentFid || freshFile.pdirFid || file.parentFid || file.pdirFid || "0",
     getTranscodeUrls,
   });
   const play = result.play || {};

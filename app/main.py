@@ -1,12 +1,14 @@
+import base64
 import hashlib
 import json
 import secrets
 import sqlite3
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -52,6 +54,7 @@ from .runtime import execute_source
 
 app = FastAPI(title="Colvins Source Service", version="0.1.0")
 BASE_DIR = Path(__file__).resolve().parent
+TVBOX_JAR_PATH = BASE_DIR / "artifacts" / "colvins-tvbox-spider.jar"
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -160,30 +163,42 @@ def _quark_saved_fids_from_task(client: QuarkClient, save: dict[str, Any]) -> li
 
 
 def _quark_play_candidates_for_saved_fid(client: QuarkClient, saved_fid: str, fallback_name: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
-    video_play, headers = client.video_play_urls(saved_fid)
+    headers = {'User-Agent': client.user_agent, 'Referer': 'https://pan.quark.cn/', 'Cookie': client.cookie}
+    video_play: dict[str, Any] = {'colvins': {}}
+    video_error = ""
+    try:
+        video_play, headers = client.video_play_urls(saved_fid)
+    except QuarkNativeError as error:
+        video_error = str(error)[:240]
+        video_play.setdefault('colvins', {})['videoPlayError'] = video_error
+
     play_candidates: list[dict[str, Any]] = []
     try:
         play_candidates.append(
             {
-                "name": "raw",
-                "url": client.download_url(saved_fid),
-                "header": headers,
+                'name': 'raw',
+                'url': client.download_url(saved_fid),
+                'header': headers,
             }
         )
     except QuarkNativeError as error:
-        video_play.setdefault("colvins", {})["rawError"] = str(error)[:240]
-    video_data = video_play.get("data") or {}
-    video_items = video_data.get("video_list") or video_data.get("videoList") or []
+        video_play.setdefault('colvins', {})['rawError'] = str(error)[:240]
+
+    video_data = video_play.get('data') or {}
+    video_items = video_data.get('video_list') or video_data.get('videoList') or []
     for item in video_items:
         if isinstance(item, dict):
-            video_info = item.get("video_info") if isinstance(item.get("video_info"), dict) else {}
+            video_info = item.get('video_info') if isinstance(item.get('video_info'), dict) else {}
             play_candidates.append(
                 {
-                    "name": item.get("quality") or item.get("resolution") or item.get("format") or fallback_name or "transcoded",
-                    "url": item.get("url") or video_info.get("url") or "",
-                    "header": headers,
+                    'name': item.get('quality') or item.get('resolution') or item.get('format') or fallback_name or 'transcoded',
+                    'url': item.get('url') or video_info.get('url') or '',
+                    'header': headers,
                 }
             )
+
+    if not play_candidates and video_error:
+        raise QuarkNativeError(video_error)
     return play_candidates, headers, video_play
 
 
@@ -300,18 +315,27 @@ def export_catpaw(subscription: dict[str, Any], base_url: str) -> dict[str, Any]
 
 
 def export_tvbox(subscription: dict[str, Any], base_url: str) -> dict[str, Any]:
+    spider = f"{base_url}/api/tvbox/jar/colvins-tvbox-spider.jar" if TVBOX_JAR_PATH.exists() else ""
     sites = []
     for source in subscription["sources"]:
+        ext = urlencode(
+            {
+                "baseUrl": base_url,
+                "sourceId": source["id"],
+                "sourceName": source["name"],
+            }
+        )
         sites.append(
             {
-                "key": f"source_{source['id']}",
+                "key": f"spider_{source['id']}",
                 "name": source["name"],
-                "type": 1,
-                "api": f"{base_url}/api/tvbox/source/{source['id']}",
+                "type": 3,
+                "api": "csp_ColvinsTvBox",
+                "jar": spider,
                 "searchable": 1,
-                "changeable": 1,
                 "quickSearch": 1,
-                "ext": source["downloadURL"] or "",
+                "filterable": 1,
+                "ext": ext,
             }
         )
     return {
@@ -319,7 +343,7 @@ def export_tvbox(subscription: dict[str, Any], base_url: str) -> dict[str, Any]:
         "lives": [],
         "parses": [],
         "flags": [],
-        "spider": "",
+        "spider": spider,
         "ijk": {},
     }
 
@@ -441,12 +465,45 @@ def _runtime_envelope(payload: dict[str, Any]) -> JSONResponse:
 
 
 def _runtime_raw(source_id: int, action: str, params: dict[str, Any], request: Request) -> JSONResponse:
-    with get_conn() as conn:
-        return JSONResponse(_normalize_runtime_payload(execute_source(conn, source_id, action, params, _base_url_from_request(request))))
+    try:
+        with get_conn() as conn:
+            payload = _normalize_runtime_payload(execute_source(conn, source_id, action, params, _base_url_from_request(request)))
+    except RuntimeError as error:
+        if str(error) == "source not found":
+            raise HTTPException(status_code=404, detail="source not found") from error
+        raise
+    if action in ("home", "category", "search"):
+        payload = _normalize_tvbox_listing_payload(payload, action)
+    return JSONResponse(payload)
 
 
-def _tvbox_detail_payload(source_id: int, payload: Any, request: Request) -> Any:
-    payload = _normalize_runtime_payload(payload)
+def _normalize_tvbox_item(item: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(item)
+    defaults = {
+        "vod_id": "",
+        "vod_name": "",
+        "vod_pic": "",
+        "vod_content": "",
+        "vod_year": "",
+        "vod_area": "",
+        "vod_lang": "",
+        "vod_actor": "",
+        "vod_director": "",
+        "vod_play_url": "",
+        "vod_play_from": "",
+        "type_name": "",
+        "vod_time": "",
+        "vod_remarks": "",
+        "vod_sub": "",
+        "vod_tag": "",
+        "vod_class": "",
+    }
+    for key, value in defaults.items():
+        normalized.setdefault(key, value)
+    return normalized
+
+
+def _normalize_tvbox_listing_payload(payload: Any, action: str) -> Any:
     if not isinstance(payload, dict):
         return payload
 
@@ -454,20 +511,101 @@ def _tvbox_detail_payload(source_id: int, payload: Any, request: Request) -> Any
     if not isinstance(items, list):
         return payload
 
+    normalized_items = [
+        _normalize_tvbox_item(item) if isinstance(item, dict) else item
+        for item in items
+    ]
+
+    normalized = dict(payload)
+    normalized["list"] = normalized_items
+
+    total = normalized.get("total")
+    try:
+        total_value = int(total)
+    except (TypeError, ValueError):
+        total_value = 0
+    if total_value <= 0:
+        total_value = len(normalized_items)
+
+    page = normalized.get("page")
+    try:
+        page_value = int(page)
+    except (TypeError, ValueError):
+        page_value = 1
+    if page_value <= 0:
+        page_value = 1
+
+    pagecount = normalized.get("pagecount")
+    try:
+        pagecount_value = int(pagecount)
+    except (TypeError, ValueError):
+        pagecount_value = 0
+
+    if action == "home":
+        home_payload = {
+            "class": normalized.get("class") or [],
+            "list": normalized_items,
+        }
+        if "filters" in normalized:
+            home_payload["filters"] = normalized.get("filters")
+        return home_payload
+
+    if pagecount_value < 0:
+        pagecount_value = 0
+
+    listing_payload = {
+        "list": normalized_items,
+        "page": page_value,
+        "pagecount": pagecount_value,
+        "total": total_value,
+    }
+    return listing_payload
+
+
+def _tvbox_detail_payload(source_id: int, payload: Any, request: Request) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+
+    items = payload.get("list")
+    if not isinstance(items, list):
+        return payload
+
+    normalized_items = []
     for item in items:
         if not isinstance(item, dict):
+            normalized_items.append(item)
             continue
-        play_from = str(item.get("vod_play_from") or "")
-        play_url = str(item.get("vod_play_url") or "")
-        if not play_from or not play_url:
-            continue
-        flags = play_from.split("$$$")
-        groups = play_url.split("$$$")
-        item["vod_play_url"] = "$$$".join(
-            _tvbox_episode_group(source_id, flag, group, request)
-            for flag, group in zip(flags, groups)
-        )
-    return payload
+        normalized_item = _normalize_tvbox_item(item)
+        sources = item.get("vod_play_sources")
+        if isinstance(sources, list) and sources:
+            flags = []
+            groups = []
+            for source in sources:
+                if not isinstance(source, dict):
+                    continue
+                name = str(source.get("name") or source.get("flag") or "").strip()
+                episodes = source.get("episodes")
+                if not name or not isinstance(episodes, list):
+                    continue
+                encoded_episodes = []
+                for episode in episodes:
+                    if not isinstance(episode, dict):
+                        continue
+                    episode_name = str(episode.get("name") or episode.get("title") or "").strip()
+                    play_id = str(episode.get("playId") or episode.get("id") or episode.get("url") or "").strip()
+                    if episode_name and play_id:
+                        encoded_episodes.append(f"{episode_name}${play_id}")
+                if encoded_episodes:
+                    flags.append(name)
+                    groups.append("#".join(encoded_episodes))
+            if flags and groups:
+                normalized_item["vod_play_from"] = "$$$".join(flags)
+                normalized_item["vod_play_url"] = "$$$".join(groups)
+        normalized_items.append(normalized_item)
+
+    normalized = dict(payload)
+    normalized["list"] = normalized_items
+    return normalized
 
 
 def _tvbox_episode_group(source_id: int, flag: str, group: str, request: Request) -> str:
@@ -501,10 +639,124 @@ def _tvbox_direct_play_url(play_id: str) -> str | None:
     return candidate
 
 
+def _tvbox_candidate_headers(item: dict[str, Any], fallback: dict[str, str]) -> dict[str, str]:
+    header_value = item.get("headers")
+    if isinstance(header_value, dict) and header_value:
+        return {str(key): str(value) for key, value in header_value.items() if key and value is not None}
+    header_value = item.get("header")
+    if isinstance(header_value, dict) and header_value:
+        return {str(key): str(value) for key, value in header_value.items() if key and value is not None}
+    return dict(fallback)
+
+
+def _tvbox_collect_candidate(candidates: list[dict[str, Any]], name: str, url: str, headers: dict[str, str], format_name: str) -> None:
+    direct_url = _tvbox_direct_play_url(url)
+    if not direct_url:
+        return
+    entry = {
+        "name": (name or "直连").strip() or "直连",
+        "url": direct_url,
+        "headers": headers,
+        "format": format_name or "",
+    }
+    if any(item["name"] == entry["name"] and item["url"] == entry["url"] for item in candidates):
+        return
+    candidates.append(entry)
+
+
+def _tvbox_play_options(payload: Any) -> dict[str, Any]:
+    normalized = _normalize_runtime_payload(payload)
+    if not isinstance(normalized, dict):
+        return {"candidates": [], "message": "invalid play payload", "proxyStreaming": False}
+
+    default_headers = {}
+    if isinstance(normalized.get("header"), dict):
+        default_headers = {str(key): str(value) for key, value in normalized["header"].items() if key and value is not None}
+    elif isinstance(normalized.get("headers"), dict):
+        default_headers = {str(key): str(value) for key, value in normalized["headers"].items() if key and value is not None}
+
+    format_name = str(normalized.get("format") or "")
+    candidates: list[dict[str, Any]] = []
+
+    urls_value = normalized.get("urls")
+    if isinstance(urls_value, list):
+        if all(isinstance(item, dict) for item in urls_value):
+            for item in urls_value:
+                _tvbox_collect_candidate(
+                    candidates,
+                    str(item.get("name") or item.get("quality") or item.get("format") or "直连"),
+                    str(item.get("url") or ""),
+                    _tvbox_candidate_headers(item, default_headers),
+                    str(item.get("format") or format_name),
+                )
+        elif len(urls_value) >= 2:
+            pairs = iter(urls_value)
+            for name, url in zip(pairs, pairs):
+                _tvbox_collect_candidate(candidates, str(name), str(url), dict(default_headers), format_name)
+
+    url_value = normalized.get("url")
+    if isinstance(url_value, str) and not candidates:
+        _tvbox_collect_candidate(candidates, str(normalized.get("name") or "直连"), url_value, dict(default_headers), format_name)
+    elif isinstance(url_value, list) and len(url_value) >= 2 and not candidates:
+        pairs = iter(url_value)
+        for name, url in zip(pairs, pairs):
+            _tvbox_collect_candidate(candidates, str(name), str(url), dict(default_headers), format_name)
+
+    return {
+        "candidates": candidates,
+        "headers": default_headers,
+        "format": format_name,
+        "proxyStreaming": False,
+        "message": str(normalized.get("message") or normalized.get("msg") or ""),
+    }
+
+
 def quote_url_value(value: str) -> str:
     from urllib.parse import quote
 
     return quote(str(value or ""), safe="")
+
+
+def _decode_colvins_file_ref(value: str) -> dict[str, Any] | None:
+    text = str(value or "")
+    if not text.startswith("colvins:"):
+        return None
+    encoded = text.split(":", 1)[1]
+    if not encoded:
+        return None
+    padding = "=" * (-len(encoded) % 4)
+    try:
+        return json.loads(base64.urlsafe_b64decode((encoded + padding).encode()).decode())
+    except Exception:
+        return None
+
+
+def _tvbox_drive_play_fallback(flag: str, play_id: str):
+    parts = str(play_id or "").split("|")
+    if len(parts) < 2:
+        return None
+    share_url = str(parts[0] or "").strip()
+    parsed = parse_drive_share_url(share_url)
+    if not isinstance(parsed, dict) or not parsed.get("isValid"):
+        return None
+    file_info = _decode_colvins_file_ref(parts[1])
+    if not isinstance(file_info, dict):
+        return None
+    payload = DrivePlayPayload(
+        shareURL=share_url,
+        fid=str(file_info.get("fid") or ""),
+        flag=str(flag or file_info.get("name") or ""),
+        filePath=str(file_info.get("path") or ""),
+        shareFidToken=str(file_info.get("shareFidToken") or file_info.get("share_fid_token") or ""),
+        pdirFid=str(file_info.get("parentFid") or file_info.get("pdirFid") or "0"),
+        getTranscodeUrls=True,
+    )
+    result = drive_share_play(str(parsed.get("provider") or "quark"), payload)
+    if isinstance(result, dict):
+        raw = result.get("raw")
+        if isinstance(raw, dict) and raw.get("urls"):
+            return raw
+    return None
 
 
 @app.get("/health")
@@ -1480,6 +1732,13 @@ def export_subscription_tvbox_config(subscription_id: int, token: str | None = N
     return export_tvbox_config(subscription_id, token)
 
 
+@app.get("/api/tvbox/jar/colvins-tvbox-spider.jar")
+def tvbox_spider_jar():
+    if not TVBOX_JAR_PATH.exists():
+        raise HTTPException(status_code=404, detail="tvbox spider jar not built")
+    return FileResponse(TVBOX_JAR_PATH, media_type="application/java-archive", filename="colvins-tvbox-spider.jar")
+
+
 @app.get("/api/runtime/source/{source_id}")
 def runtime_source_stub(source_id: int):
     with get_conn() as conn:
@@ -1549,13 +1808,20 @@ def runtime_detail(source_id: int, request: Request, videoId: str = "", id: str 
 def runtime_play(source_id: int, request: Request, flag: str = "", playId: str = "", id: str = ""):
     resolved_play_id = playId or id
     with get_conn() as conn:
-        return _runtime_envelope(execute_source(
+        payload = execute_source(
             conn,
             source_id,
             "play",
             {"flag": flag, "playId": resolved_play_id, "id": resolved_play_id},
             _base_url_from_request(request),
-        ))
+        )
+    options = _tvbox_play_options(payload)
+    if options.get("candidates"):
+        return _runtime_envelope(payload)
+    fallback = _tvbox_drive_play_fallback(flag, resolved_play_id)
+    if fallback is not None:
+        return _runtime_envelope(fallback)
+    return _runtime_envelope(payload)
 
 
 @app.get("/api/v1/source/{source_id}/home")
@@ -1599,14 +1865,18 @@ def runtime_tvbox_json(
 ):
     action = ac.lower().strip()
     resolved_page = page or pg or 1
+    resolved_category_id = t or tid or id
+    resolved_video_id = ids or id
     if wd or keyword:
         return runtime_tvbox_search(source_id, request, wd, keyword, pg, page)
     if action in ("videolist", "category"):
-        resolved_category_id = t or tid or id
         return runtime_tvbox_category(source_id, request, resolved_category_id, resolved_category_id, pg, page)
     if action == "detail":
-        resolved_video_id = ids or id
+        if not resolved_video_id and resolved_category_id:
+            return runtime_tvbox_category(source_id, request, resolved_category_id, resolved_category_id, pg, page)
         return runtime_tvbox_detail(source_id, request, resolved_video_id, resolved_video_id, resolved_video_id)
+    if resolved_category_id and action not in ("play",):
+        return runtime_tvbox_category(source_id, request, resolved_category_id, resolved_category_id, pg, page)
     if action == "play":
         return runtime_tvbox_play(source_id, request, "", id, id)
     return runtime_tvbox_home(source_id, request)
@@ -1658,12 +1928,37 @@ def runtime_tvbox_detail(source_id: int, request: Request, id: str = "", ids: st
 @app.get("/api/tvbox/source/{source_id}/play")
 def runtime_tvbox_play(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = ""):
     resolved_play_id = playId or id
-    return _runtime_raw(
+    payload = _runtime_raw(
         source_id,
         "play",
         {"flag": flag, "playId": resolved_play_id, "id": resolved_play_id},
         request,
     )
+    if not (_tvbox_play_options(payload).get("candidates") or []):
+        fallback = _tvbox_drive_play_fallback(flag, resolved_play_id)
+        if fallback is not None:
+            return JSONResponse(fallback)
+    return payload
+
+
+@app.get("/api/tvbox/source/{source_id}/play-options")
+def runtime_tvbox_play_options(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = ""):
+    resolved_play_id = playId or id
+    with get_conn() as conn:
+        payload = execute_source(
+            conn,
+            source_id,
+            "play",
+            {"flag": flag, "playId": resolved_play_id, "id": resolved_play_id},
+            _base_url_from_request(request),
+        )
+    options = _tvbox_play_options(payload)
+    if options.get("candidates"):
+        return JSONResponse(options)
+    fallback = _tvbox_drive_play_fallback(flag, resolved_play_id)
+    if fallback is not None:
+        return JSONResponse(_tvbox_play_options(fallback))
+    return JSONResponse(options)
 
 
 @app.get("/api/tvbox/source/{source_id}/play-url")
