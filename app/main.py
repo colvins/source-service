@@ -1,8 +1,10 @@
 import base64
+import copy
 import hashlib
 import json
 import secrets
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
@@ -55,6 +57,13 @@ from .runtime import execute_source
 app = FastAPI(title="Colvins Source Service", version="0.1.0")
 BASE_DIR = Path(__file__).resolve().parent
 TVBOX_JAR_PATH = BASE_DIR / "artifacts" / "colvins-tvbox-spider.jar"
+TVBOX_SPIDER_TXT_PATH = BASE_DIR / "artifacts" / "colvins-tvbox-spider.txt"
+DRIVE_PARSE_CACHE_TTL_SECONDS = 300
+DRIVE_FILES_CACHE_TTL_SECONDS = 300
+TVBOX_DETAIL_CACHE_TTL_SECONDS = 120
+_drive_parse_cache: dict[tuple[str, str], tuple[float, Any]] = {}
+_drive_files_cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
+_tvbox_detail_cache: dict[tuple[int, str], tuple[float, Any]] = {}
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -62,6 +71,22 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+
+
+def _cache_get(cache: dict[Any, tuple[float, Any]], key: Any) -> Any | None:
+    entry = cache.get(key)
+    if entry is None:
+        return None
+    expires_at, value = entry
+    if expires_at <= time.monotonic():
+        cache.pop(key, None)
+        return None
+    return copy.deepcopy(value)
+
+
+def _cache_set(cache: dict[Any, tuple[float, Any]], key: Any, ttl_seconds: int, value: Any) -> Any:
+    cache[key] = (time.monotonic() + ttl_seconds, copy.deepcopy(value))
+    return value
 
 
 def fetch_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -315,19 +340,27 @@ def export_catpaw(subscription: dict[str, Any], base_url: str) -> dict[str, Any]
 
 
 def export_tvbox(subscription: dict[str, Any], base_url: str) -> dict[str, Any]:
-    spider = f"{base_url}/api/tvbox/jar/colvins-tvbox-spider.jar" if TVBOX_JAR_PATH.exists() else ""
+    spider = tvbox_spider_with_md5(base_url)
     sites = []
     for source in subscription["sources"]:
         sites.append(
             {
-                "key": f"source_{source['id']}",
+                "key": f"csp_source_{source['id']}",
                 "name": source["name"],
-                "type": 1,
-                "api": f"{base_url}/api/tvbox/source/{source['id']}",
+                "type": 3,
+                "api": "csp_ColvinsTvBox",
+                "jar": spider,
                 "searchable": 1,
                 "changeable": 1,
                 "quickSearch": 1,
-                "ext": source.get("downloadURL") or "",
+                "filterable": 1,
+                "ext": urlencode(
+                    {
+                        "baseUrl": base_url,
+                        "sourceId": str(source["id"]),
+                        "sourceName": source["name"],
+                    }
+                ),
             }
         )
     return {
@@ -338,6 +371,16 @@ def export_tvbox(subscription: dict[str, Any], base_url: str) -> dict[str, Any]:
         "spider": spider,
         "ijk": {},
     }
+
+
+def tvbox_spider_with_md5(base_url: str) -> str:
+    if TVBOX_SPIDER_TXT_PATH.exists():
+        digest = hashlib.md5(TVBOX_SPIDER_TXT_PATH.read_bytes()).hexdigest()
+        return f"{base_url}/api/tvbox/spider/colvins-tvbox-spider.txt;md5;{digest}"
+    if TVBOX_JAR_PATH.exists():
+        digest = hashlib.md5(TVBOX_JAR_PATH.read_bytes()).hexdigest()
+        return f"{base_url}/api/tvbox/jar/colvins-tvbox-spider.jar;md5;{digest}"
+    return ""
 
 
 def catpaw_index_script(subscription: dict[str, Any], base_url: str) -> str:
@@ -589,7 +632,7 @@ def _tvbox_detail_payload(source_id: int, payload: Any, request: Request) -> Any
                         encoded_episodes.append(f"{episode_name}${play_id}")
                 if encoded_episodes:
                     flags.append(name)
-                    groups.append(_tvbox_episode_group(source_id, name, "#".join(encoded_episodes), request))
+                    groups.append("#".join(encoded_episodes))
             if flags and groups:
                 normalized_item["vod_play_from"] = "$$$".join(flags)
                 normalized_item["vod_play_url"] = "$$$".join(groups)
@@ -611,6 +654,25 @@ def _tvbox_episode_group(source_id: int, flag: str, group: str, request: Request
             f"{name}${base_url}/api/tvbox/source/{source_id}/play-url?flag={quote_url_value(flag)}&play={quote_url_value(play_id)}"
         )
     return "#".join(episodes)
+
+
+def _tvbox_unwrap_play_id(play_id: str) -> str:
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    text = str(play_id or "").strip()
+    if not text.startswith(("http://", "https://")):
+        return text
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return text
+    if not parsed.path.endswith("/play-url"):
+        return text
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    value = query.get("play") or query.get("playId") or query.get("id")
+    if not value:
+        return text
+    return unquote(str(value[0] or "")).strip() or text
 
 
 def _tvbox_direct_play_url(play_id: str) -> str | None:
@@ -1193,7 +1255,12 @@ def quark_share_play(payload: QuarkPlayPayload):
 
 @app.post("/api/drive/share/parse")
 def auto_parse_drive_share(payload: DriveSharePayload):
-    return parse_drive_share_url(payload.shareURL)
+    cache_key = ("auto", payload.shareURL)
+    cached = _cache_get(_drive_parse_cache, cache_key)
+    if cached is not None:
+        return cached
+    result = parse_drive_share_url(payload.shareURL)
+    return _cache_set(_drive_parse_cache, cache_key, DRIVE_PARSE_CACHE_TTL_SECONDS, result)
 
 
 @app.post("/api/drive/{provider}/share/parse")
@@ -1202,11 +1269,18 @@ def drive_parse_share(provider: str, payload: DriveSharePayload):
         provider = normalize_provider(provider)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    cache_key = (provider, payload.shareURL)
+    cached = _cache_get(_drive_parse_cache, cache_key)
+    if cached is not None:
+        return cached
     if provider == "quark":
-        return parse_quark_share_url(payload.shareURL)
+        result = parse_quark_share_url(payload.shareURL)
+        return _cache_set(_drive_parse_cache, cache_key, DRIVE_PARSE_CACHE_TTL_SECONDS, result)
     if provider == "baidu":
-        return parse_baidu_share_url(payload.shareURL)
-    return parse_drive_share_url(payload.shareURL, provider)
+        result = parse_baidu_share_url(payload.shareURL)
+        return _cache_set(_drive_parse_cache, cache_key, DRIVE_PARSE_CACHE_TTL_SECONDS, result)
+    result = parse_drive_share_url(payload.shareURL, provider)
+    return _cache_set(_drive_parse_cache, cache_key, DRIVE_PARSE_CACHE_TTL_SECONDS, result)
 
 
 @app.post("/api/drive/{provider}/share/info")
@@ -1269,6 +1343,10 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
         provider = normalize_provider(provider)
     except ValueError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    cache_key = (provider, payload.shareURL, payload.pdirFid)
+    cached = _cache_get(_drive_files_cache, cache_key)
+    if cached is not None:
+        return cached
     parsed = parse_drive_share_url(payload.shareURL, provider)
     if not parsed["isValid"]:
         raise HTTPException(status_code=400, detail=f"invalid {provider} share URL")
@@ -1281,7 +1359,7 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
                 stoken = client.share_token(parsed["shareId"], parsed.get("password", ""))
                 detail = client.list_share_files(parsed["shareId"], stoken, payload.pdirFid)
                 files = normalize_drive_files(detail)
-                return {
+                result = {
                     "provider": provider,
                     "mode": "native",
                     "share": {**parsed, "stokenReady": True},
@@ -1290,6 +1368,7 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
                     "total": len(files),
                     "hasMore": False,
                 }
+                return _cache_set(_drive_files_cache, cache_key, DRIVE_FILES_CACHE_TTL_SECONDS, result)
             except QuarkNativeError as error:
                 return {
                     "provider": provider,
@@ -1309,7 +1388,7 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
             try:
                 share, detail = client.list_share_files(payload.shareURL)
                 files = normalize_drive_files(detail)
-                return {
+                result = {
                     "provider": provider,
                     "mode": "native",
                     "share": share,
@@ -1318,6 +1397,7 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
                     "total": len(files),
                     "hasMore": False,
                 }
+                return _cache_set(_drive_files_cache, cache_key, DRIVE_FILES_CACHE_TTL_SECONDS, result)
             except BaiduNativeError as error:
                 return {
                     "provider": provider,
@@ -1356,13 +1436,14 @@ def drive_share_files(provider: str, payload: DriveFileListPayload):
             "hasMore": False,
             "message": f"{provider} native file listing is not implemented yet. Configure OMNIBOX_API_URL for temporary fallback.",
         }
-    return {
+    result = {
         "provider": provider,
         "mode": "omnibox-fallback",
         "share": parsed,
         "data": bridged,
         "files": normalize_drive_files(bridged),
     }
+    return _cache_set(_drive_files_cache, cache_key, DRIVE_FILES_CACHE_TTL_SECONDS, result)
 
 
 @app.post("/api/drive/{provider}/share/play")
@@ -1729,6 +1810,13 @@ def tvbox_spider_jar():
     return FileResponse(TVBOX_JAR_PATH, media_type="application/java-archive", filename="colvins-tvbox-spider.jar")
 
 
+@app.get("/api/tvbox/spider/colvins-tvbox-spider.txt")
+def tvbox_spider_txt():
+    if not TVBOX_SPIDER_TXT_PATH.exists():
+        raise HTTPException(status_code=404, detail="tvbox spider txt not built")
+    return FileResponse(TVBOX_SPIDER_TXT_PATH, media_type="application/octet-stream", filename="colvins-tvbox-spider.txt")
+
+
 @app.get("/api/runtime/source/{source_id}")
 def runtime_source_stub(source_id: int):
     with get_conn() as conn:
@@ -1907,6 +1995,10 @@ def runtime_tvbox_search(source_id: int, request: Request, wd: str = "", keyword
 @app.get("/api/tvbox/source/{source_id}/detail")
 def runtime_tvbox_detail(source_id: int, request: Request, id: str = "", ids: str = "", videoId: str = ""):
     resolved_video_id = videoId or id or ids
+    cache_key = (source_id, resolved_video_id)
+    cached = _cache_get(_tvbox_detail_cache, cache_key)
+    if cached is not None:
+        return JSONResponse(cached)
     with get_conn() as conn:
         payload = execute_source(
             conn,
@@ -1915,12 +2007,14 @@ def runtime_tvbox_detail(source_id: int, request: Request, id: str = "", ids: st
             {"videoId": resolved_video_id, "id": resolved_video_id, "ids": resolved_video_id},
             _base_url_from_request(request),
         )
-    return JSONResponse(_tvbox_detail_payload(source_id, payload, request))
+    normalized = _tvbox_detail_payload(source_id, payload, request)
+    _cache_set(_tvbox_detail_cache, cache_key, TVBOX_DETAIL_CACHE_TTL_SECONDS, normalized)
+    return JSONResponse(normalized)
 
 
 @app.get("/api/tvbox/source/{source_id}/play")
 def runtime_tvbox_play(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = "", play: str = ""):
-    resolved_play_id = play or playId or id
+    resolved_play_id = _tvbox_unwrap_play_id(play or playId or id)
     payload = _runtime_raw(
         source_id,
         "play",
@@ -1936,7 +2030,7 @@ def runtime_tvbox_play(source_id: int, request: Request, flag: str = "", id: str
 
 @app.get("/api/tvbox/source/{source_id}/play-options")
 def runtime_tvbox_play_options(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = "", play: str = ""):
-    resolved_play_id = play or playId or id
+    resolved_play_id = _tvbox_unwrap_play_id(play or playId or id)
     with get_conn() as conn:
         payload = execute_source(
             conn,
@@ -1956,7 +2050,7 @@ def runtime_tvbox_play_options(source_id: int, request: Request, flag: str = "",
 
 @app.get("/api/tvbox/source/{source_id}/play-url")
 def runtime_tvbox_play_url(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = "", play: str = ""):
-    resolved_play_id = play or playId or id
+    resolved_play_id = _tvbox_unwrap_play_id(play or playId or id)
     with get_conn() as conn:
         payload = _normalize_runtime_payload(execute_source(
             conn,

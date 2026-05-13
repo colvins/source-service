@@ -83,7 +83,7 @@ public final class HttpBridge {
     }
 
     public static Object[] openProxy(PlayBundle.Candidate candidate, Map<String, String> params) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) URI.create(candidate.url()).toURL().openConnection();
+        HttpURLConnection connection = (HttpURLConnection) URI.create(sanitizeUrl(candidate.url())).toURL().openConnection();
         connection.setInstanceFollowRedirects(true);
         connection.setConnectTimeout(15000);
         connection.setReadTimeout(30000);
@@ -98,6 +98,7 @@ public final class HttpBridge {
         }
 
         int status = connection.getResponseCode();
+        status = normalizeStatus(status);
         String mimeType = connection.getContentType();
         Map<String, String> headers = responseHeaders(connection);
         InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
@@ -174,6 +175,39 @@ public final class HttpBridge {
 
     private static String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    private static String sanitizeUrl(String value) {
+        return nullToEmpty(value).replace(" ", "%20");
+    }
+
+    private static int normalizeStatus(int status) {
+        switch (status) {
+            case 200:
+            case 206:
+            case 301:
+            case 302:
+            case 303:
+            case 307:
+            case 308:
+            case 400:
+            case 401:
+            case 403:
+            case 404:
+            case 405:
+            case 409:
+            case 410:
+            case 412:
+            case 416:
+            case 429:
+            case 500:
+            case 502:
+            case 503:
+            case 504:
+                return status;
+            default:
+                return status >= 200 && status < 300 ? 200 : 502;
+        }
     }
 
     private static byte[] utf8(String value) throws Exception {
