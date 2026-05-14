@@ -1933,9 +1933,11 @@ def export_subscription_tvbox_config(subscription_id: int, token: str | None = N
 
 @app.get("/api/tvbox/jar/colvins-tvbox-spider.jar")
 def tvbox_spider_jar():
-    if not TVBOX_JAR_PATH.exists():
-        raise HTTPException(status_code=404, detail="tvbox spider jar not built")
-    return FileResponse(TVBOX_JAR_PATH, media_type="application/java-archive", filename="colvins-tvbox-spider.jar")
+    if TVBOX_SPIDER_TXT_PATH.exists():
+        return FileResponse(TVBOX_SPIDER_TXT_PATH, media_type="application/octet-stream", filename="colvins-tvbox-spider.jar")
+    if TVBOX_JAR_PATH.exists():
+        return FileResponse(TVBOX_JAR_PATH, media_type="application/java-archive", filename="colvins-tvbox-spider.jar")
+    raise HTTPException(status_code=404, detail="tvbox spider artifact not built")
 
 
 @app.get("/api/tvbox/spider/colvins-tvbox-spider.txt")
