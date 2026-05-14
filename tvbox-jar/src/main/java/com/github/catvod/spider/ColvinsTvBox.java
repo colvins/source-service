@@ -10,7 +10,6 @@ import com.google.gson.Gson;
 
 import java.io.ByteArrayInputStream;
 import java.net.URLEncoder;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ColvinsTvBox extends Spider {
 
     private static final Gson GSON = new Gson();
+    // proxy() 回调仍保留，用于非网盘资源的服务端代理场景
     private static final Map<String, PlayBundle.Candidate> PROXY_CACHE = new ConcurrentHashMap<>();
 
     private SourceConfig config;
@@ -71,14 +71,31 @@ public class ColvinsTvBox extends Spider {
         if (bundle.candidates().isEmpty()) {
             return "{\"parse\":0,\"url\":\"\",\"msg\":\"" + escape(isBlank(bundle.message()) ? "当前线路没有可播放直连地址" : bundle.message()) + "\"}";
         }
-        PlayBundle.Candidate candidate = selectCandidate(flag, bundle);
-        PlayBundle selected = new PlayBundle(Collections.singletonList(candidate), bundle.message());
-        playCache.put(cacheKey(flag, id), selected);
-        if (isDrivePlayId(id) || isProxyFlag(flag)) {
+
+        if (isDrivePlayId(id)) {
+            // 网盘资源：选 raw candidate，通过 TVBox 内置 kaiser 本地代理多线程播放
+            PlayBundle.Candidate raw = selectRawCandidate(bundle);
+            if (raw != null) {
+                String kaiserUrl = buildKaiserUrl(raw.url(), driveType(id));
+                return kaiserResult(kaiserUrl, raw.headers(), bundle.message());
+            }
+            // 没有 raw 则回退到转码直链
+            PlayBundle.Candidate candidate = selectTranscodeCandidate(bundle);
+            return directResult(candidate, bundle.message());
+        }
+
+        if (isProxyFlag(flag)) {
+            // 显式要求服务端代理（"服务端代理" flag）时走 proxy://
+            PlayBundle.Candidate candidate = selectRawCandidate(bundle);
+            if (candidate == null) candidate = bundle.candidates().get(0);
+            playCache.put(cacheKey(flag, id), new PlayBundle(java.util.Collections.singletonList(candidate), bundle.message()));
             String token = encodeProxyToken(config, flag, id, 0);
             PROXY_CACHE.put(token, candidate);
             return "{\"parse\":0,\"url\":\"" + escape(proxyUrl(token)) + "\"}";
         }
+
+        // 普通资源直连
+        PlayBundle.Candidate candidate = selectTranscodeCandidate(bundle);
         return directResult(candidate, bundle.message());
     }
 
@@ -87,13 +104,68 @@ public class ColvinsTvBox extends Spider {
         return proxyFromParams(params);
     }
 
-    private Object[] errorProxy(String message) {
-        try {
-            return new Object[]{502, "text/plain; charset=utf-8", new ByteArrayInputStream((message == null ? "" : message).getBytes("UTF-8"))};
-        } catch (Exception error) {
-            return new Object[]{502, "text/plain; charset=utf-8", new ByteArrayInputStream(new byte[0])};
-        }
+    // ── kaiser 本地多线程代理 ──────────────────────────────────────────────
+
+    /**
+     * 构造 TVBox kaiser 本地代理 URL。
+     * 格式：http://127.0.0.1:8096/kaiser?url={encoded}&thread=16&chunk=512&key={driveType}&type={driveType}
+     */
+    private String buildKaiserUrl(String rawUrl, String driveType) {
+        return "http://127.0.0.1:8096/kaiser"
+            + "?url=" + encode(rawUrl)
+            + "&thread=16"
+            + "&chunk=512"
+            + "&key=" + driveType
+            + "&type=" + driveType;
     }
+
+    /** 从 play_id 推断网盘类型（quark / baidu） */
+    private String driveType(String id) {
+        if (id != null && id.contains("pan.baidu.com/")) return "baidu";
+        return "quark";
+    }
+
+    /** 构造 kaiser 播放结果 JSON，带 header */
+    private String kaiserResult(String kaiserUrl, Map<String, String> headers, String message) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("{\"parse\":0");
+        builder.append(",\"url\":\"").append(escape(kaiserUrl)).append("\"");
+        if (!headers.isEmpty()) {
+            builder.append(",\"header\":").append(GSON.toJson(headers));
+        }
+        if (!isBlank(message)) {
+            builder.append(",\"msg\":\"").append(escape(message)).append("\"");
+        }
+        builder.append("}");
+        return builder.toString();
+    }
+
+    // ── candidate 选择 ────────────────────────────────────────────────────
+
+    /** 选 raw candidate（原始下载链接，适合 kaiser 多线程） */
+    private PlayBundle.Candidate selectRawCandidate(PlayBundle bundle) {
+        for (PlayBundle.Candidate c : bundle.candidates()) {
+            if ("raw".equalsIgnoreCase(c.name())) return c;
+        }
+        return null;
+    }
+
+    /** 选转码 candidate，优先级 4k > super > high > low，兜底第一个非 raw */
+    private PlayBundle.Candidate selectTranscodeCandidate(PlayBundle bundle) {
+        String[] preferred = {"4k", "super", "high", "low"};
+        for (String name : preferred) {
+            for (PlayBundle.Candidate c : bundle.candidates()) {
+                if (name.equalsIgnoreCase(c.name())) return c;
+            }
+        }
+        // 没有转码版，返回第一个非 raw
+        for (PlayBundle.Candidate c : bundle.candidates()) {
+            if (!"raw".equalsIgnoreCase(c.name())) return c;
+        }
+        return bundle.candidates().get(0);
+    }
+
+    // ── 工具方法 ──────────────────────────────────────────────────────────
 
     private String fetchRuntime(String path) throws Exception {
         HttpBridge.HttpResponse response = HttpBridge.getJson(config.baseUrl() + path);
@@ -115,29 +187,9 @@ public class ColvinsTvBox extends Spider {
             + "&token=" + encode(token);
     }
 
-    private PlayBundle.Candidate selectCandidate(String flag, PlayBundle bundle) {
-        if (bundle.candidates().isEmpty()) throw new IllegalStateException("播放候选不存在");
-        PlayBundle.Candidate raw = null;
-        for (PlayBundle.Candidate candidate : bundle.candidates()) {
-            if ("raw".equalsIgnoreCase(candidate.name())) {
-                raw = candidate;
-                break;
-            }
-        }
-        if (raw != null && (isProxyFlag(flag) || isDirectFlag(flag))) {
-            return raw;
-        }
-        return raw != null ? raw : bundle.candidates().get(0);
-    }
-
     private boolean isProxyFlag(String flag) {
         String text = flag == null ? "" : flag;
-        return text.contains("本地代理") || text.contains("服务端代理");
-    }
-
-    private boolean isDirectFlag(String flag) {
-        String text = flag == null ? "" : flag;
-        return text.contains("直连");
+        return text.contains("服务端代理");
     }
 
     private boolean isDrivePlayId(String value) {
@@ -231,12 +283,6 @@ public class ColvinsTvBox extends Spider {
 
     private String escape(String value) {
         return value.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    private String getOrEmpty(Map<String, String> values, String key) {
-        if (values == null || key == null) return "";
-        String value = values.get(key);
-        return value == null ? "" : value;
     }
 
     private boolean isBlank(String value) {

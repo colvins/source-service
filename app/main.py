@@ -787,6 +787,20 @@ def _decode_colvins_file_ref(value: str) -> dict[str, Any] | None:
     encoded = text.split(":", 1)[1]
     if not encoded:
         return None
+    parts = encoded.split(":")
+    if len(parts) >= 3:
+        fid = str(parts[0] or "").strip()
+        share_fid_token = str(parts[1] or "").strip()
+        file_name = ":".join(parts[2:]).strip()
+        if fid and share_fid_token:
+            return {
+                "fid": fid,
+                "shareFidToken": share_fid_token,
+                "name": file_name,
+                "path": file_name,
+                "parentFid": "0",
+                "pdirFid": "0",
+            }
     padding = "=" * (-len(encoded) % 4)
     try:
         return json.loads(base64.urlsafe_b64decode((encoded + padding).encode()).decode())
@@ -805,16 +819,26 @@ def _tvbox_drive_play_fallback(flag: str, play_id: str):
     file_info = _decode_colvins_file_ref(parts[1])
     if not isinstance(file_info, dict):
         return None
-    payload = DrivePlayPayload(
-        shareURL=share_url,
-        fid=str(file_info.get("fid") or ""),
-        flag=str(flag or file_info.get("name") or ""),
-        filePath=str(file_info.get("path") or ""),
-        shareFidToken=str(file_info.get("shareFidToken") or file_info.get("share_fid_token") or ""),
-        pdirFid=str(file_info.get("parentFid") or file_info.get("pdirFid") or "0"),
-        getTranscodeUrls=True,
-    )
-    result = drive_share_play(str(parsed.get("provider") or "quark"), payload)
+    provider = str(parsed.get("provider") or "quark")
+
+    def build_payload(info: dict[str, Any]) -> DrivePlayPayload:
+        return DrivePlayPayload(
+            shareURL=share_url,
+            fid=str(info.get("fid") or ""),
+            flag=str(flag or info.get("name") or ""),
+            filePath=str(info.get("path") or info.get("name") or ""),
+            shareFidToken=str(info.get("shareFidToken") or info.get("share_fid_token") or ""),
+            pdirFid=str(info.get("parentFid") or info.get("pdirFid") or "0"),
+            getTranscodeUrls=True,
+        )
+
+    payload = build_payload(file_info)
+    result = drive_share_play(provider, payload)
+    if provider == "quark" and not _tvbox_drive_play_result_ready(result):
+        enriched = _resolve_drive_file_info(provider, share_url, file_info)
+        if enriched is not None and enriched != file_info:
+            payload = build_payload(enriched)
+            result = drive_share_play(provider, payload)
     if isinstance(result, dict):
         raw = result.get("raw")
         play = result.get("play")
@@ -856,6 +880,62 @@ def _tvbox_drive_play_fallback(flag: str, play_id: str):
                     "parse": 0,
                     "danmaku": [],
                 }
+    return None
+
+
+def _tvbox_drive_play_result_ready(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    raw = result.get("raw")
+    if not isinstance(raw, dict):
+        return False
+    raw_urls = raw.get("urls")
+    return isinstance(raw_urls, list) and bool(raw_urls)
+
+
+def _resolve_drive_file_info(provider: str, share_url: str, file_info: dict[str, Any]) -> dict[str, Any] | None:
+    if provider != "quark":
+        return None
+    target_fid = str(file_info.get("fid") or "").strip()
+    target_token = str(file_info.get("shareFidToken") or file_info.get("share_fid_token") or "").strip()
+    target_name = str(file_info.get("name") or file_info.get("path") or "").split("/")[-1].strip()
+    try:
+        result = drive_share_videos(
+            provider,
+            DriveVideosPayload(
+                shareURL=share_url,
+                pdirFid="0",
+                recursive=True,
+                maxDepth=8,
+                maxItems=400,
+            ),
+        )
+    except Exception:
+        return None
+    videos = result.get("videos") if isinstance(result, dict) else None
+    if not isinstance(videos, list):
+        return None
+
+    def merge(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **file_info,
+            "fid": str(item.get("fid") or file_info.get("fid") or ""),
+            "name": str(item.get("name") or file_info.get("name") or ""),
+            "path": str(item.get("path") or file_info.get("path") or item.get("name") or ""),
+            "shareFidToken": str(item.get("shareFidToken") or file_info.get("shareFidToken") or file_info.get("share_fid_token") or ""),
+            "parentFid": str(item.get("parentFid") or file_info.get("parentFid") or file_info.get("pdirFid") or "0"),
+            "pdirFid": str(item.get("parentFid") or file_info.get("pdirFid") or file_info.get("parentFid") or "0"),
+        }
+
+    for item in videos:
+        if isinstance(item, dict) and target_fid and str(item.get("fid") or "").strip() == target_fid:
+            return merge(item)
+    for item in videos:
+        if isinstance(item, dict) and target_token and str(item.get("shareFidToken") or "").strip() == target_token:
+            return merge(item)
+    for item in videos:
+        if isinstance(item, dict) and target_name and str(item.get("name") or "").strip() == target_name:
+            return merge(item)
     return None
 
 
