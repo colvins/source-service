@@ -77,7 +77,12 @@ public class ColvinsTvBox extends Spider {
         if (isDrivePlayId(id)) {
             PlayBundle.Candidate preferred = selectRawCandidate(bundle);
             if (preferred == null) preferred = bundle.candidates().get(0);
-            String kaiserUrl = buildKaiserUrl(preferred.url(), driveType(id));
+            String driveType = driveType(id);
+            String playbackUrl = preferred.url();
+            if ("quark".equals(driveType)) {
+                playbackUrl = quarkProxyUrl(preferred.url(), preferred.headers());
+            }
+            String kaiserUrl = buildKaiserUrl(playbackUrl, driveType);
             return kaiserResult(kaiserUrl, preferred.headers(), bundle.message());
         }
 
@@ -121,7 +126,7 @@ public class ColvinsTvBox extends Spider {
     private String quarkProxyUrl(String url, Map<String, String> headers) {
         String encodedUrl = Base64.getEncoder().encodeToString(nullSafe(url).getBytes(StandardCharsets.UTF_8));
         String encodedHeader = Base64.getEncoder().encodeToString(GSON.toJson(headers == null ? new HashMap<String, String>() : headers).getBytes(StandardCharsets.UTF_8));
-        return "proxy://do=quark&type=video&url=" + encode(encodedUrl) + "&header=" + encode(encodedHeader);
+        return Proxy.getUrl() + "?do=quark&type=video&url=" + encode(encodedUrl) + "&header=" + encode(encodedHeader);
     }
 
     /** 从 play_id 推断网盘类型（quark / baidu） */
@@ -219,11 +224,14 @@ public class ColvinsTvBox extends Spider {
         try {
             String action = getOrEmptyStatic(params, "do");
             String type = getOrEmptyStatic(params, "type");
+            if ("ck".equals(action)) {
+                return new Object[]{200, "text/plain; charset=utf-8", new ByteArrayInputStream("ok".getBytes("UTF-8"))};
+            }
             if ("quark".equals(action) && "video".equals(type)) {
                 String url = new String(Base64.getDecoder().decode(getOrEmptyStatic(params, "url")), StandardCharsets.UTF_8);
                 Map<String, String> headers = GSON.fromJson(new String(Base64.getDecoder().decode(getOrEmptyStatic(params, "header")), StandardCharsets.UTF_8), Map.class);
                 if (headers == null) headers = new HashMap<>();
-                String[] passthrough = {"Range", "Accept", "Accept-Encoding", "Accept-Language", "Cookie", "Origin", "Referer", "User-Agent"};
+                String[] passthrough = {"Range", "Accept", "Accept-Encoding", "Accept-Language", "Cookie", "Origin", "Referer", "Sec-Ch-Ua", "Sec-Ch-Ua-Mobile", "Sec-Ch-Ua-Platform", "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "User-Agent"};
                 for (Map.Entry<String, String> entry : params.entrySet()) {
                     for (String key : passthrough) {
                         if (key.equalsIgnoreCase(entry.getKey()) && entry.getValue() != null && entry.getValue().length() > 0) headers.put(key, entry.getValue());

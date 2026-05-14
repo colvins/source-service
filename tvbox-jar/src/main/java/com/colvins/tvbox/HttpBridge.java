@@ -83,7 +83,7 @@ public final class HttpBridge {
     }
 
     public static Object[] openProxy(PlayBundle.Candidate candidate, Map<String, String> params) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) URI.create(candidate.url()).toURL().openConnection();
+        HttpURLConnection connection = (HttpURLConnection) URI.create(sanitizeUrl(candidate.url())).toURL().openConnection();
         connection.setInstanceFollowRedirects(true);
         connection.setConnectTimeout(15000);
         connection.setReadTimeout(30000);
@@ -92,7 +92,7 @@ public final class HttpBridge {
             if (header.getKey() == null || isBlank(header.getKey())) continue;
             connection.setRequestProperty(header.getKey(), header.getValue());
         }
-        String range = getOrEmpty(params, "range");
+        String range = getHeaderIgnoreCase(params, "Range");
         if (!isBlank(range)) {
             connection.setRequestProperty("Range", range);
         }
@@ -166,6 +166,48 @@ public final class HttpBridge {
         if (values == null || key == null) return "";
         String value = values.get(key);
         return value == null ? "" : value;
+    }
+
+    private static String getHeaderIgnoreCase(Map<String, String> values, String key) {
+        if (values == null || key == null) return "";
+        String direct = values.get(key);
+        if (direct != null) return direct;
+        for (Map.Entry<String, String> entry : values.entrySet()) {
+            if (entry.getKey() != null && key.equalsIgnoreCase(entry.getKey())) {
+                return entry.getValue() == null ? "" : entry.getValue();
+            }
+        }
+        return "";
+    }
+
+    private static String sanitizeUrl(String value) {
+        String text = nullToEmpty(value);
+        StringBuilder builder = new StringBuilder(text.length());
+        for (int index = 0; index < text.length(); ) {
+            int codePoint = text.codePointAt(index);
+            index += Character.charCount(codePoint);
+            if (codePoint <= 0x20 || codePoint >= 0x7f) {
+                appendEncodedCodePoint(builder, codePoint);
+            } else {
+                builder.appendCodePoint(codePoint);
+            }
+        }
+        return builder.toString();
+    }
+
+    private static void appendEncodedCodePoint(StringBuilder builder, int codePoint) {
+        try {
+            byte[] bytes = new String(Character.toChars(codePoint)).getBytes("UTF-8");
+            char[] hex = "0123456789ABCDEF".toCharArray();
+            for (byte value : bytes) {
+                int unsigned = value & 0xff;
+                builder.append('%');
+                builder.append(hex[unsigned >> 4]);
+                builder.append(hex[unsigned & 0x0f]);
+            }
+        } catch (Exception error) {
+            builder.appendCodePoint(codePoint);
+        }
     }
 
     private static boolean isBlank(String value) {
