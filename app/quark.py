@@ -11,7 +11,7 @@ from io import BytesIO
 from typing import Any
 from http.cookiejar import CookieJar
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 
@@ -45,6 +45,30 @@ PC_PLAY_HEADERS = {
     "Referer": "https://pan.quark.cn/",
 }
 
+
+
+def normalize_quark_download_url(url: str) -> str:
+    """Make Quark OSS signed URLs safe for Java/Android without changing signed values."""
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    normalized: list[str] = []
+    for segment in parts.query.split("&"):
+        key, separator, value = segment.partition("=")
+        if not separator:
+            normalized.append(segment)
+            continue
+        if key == "response-content-disposition":
+            if value.lower().startswith("attachment%3b"):
+                value = value.replace("+", "%2B")
+            elif "%" in value:
+                value = quote(value, safe="")
+            else:
+                value = value.replace(" ", "%20").replace("+", "%2B")
+        else:
+            value = value.replace("+", "%2B")
+        normalized.append(f"{key}={value}")
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "&".join(normalized), parts.fragment))
 
 def quark_cookie_mobile_params(cookie: str) -> dict[str, str]:
     params: dict[str, str] = {}
@@ -456,4 +480,4 @@ class QuarkClient:
         url = str((items[0] or {}).get("download_url") or "").strip()
         if not url:
             raise QuarkNativeError("Quark raw download URL is empty.")
-        return url
+        return normalize_quark_download_url(url)

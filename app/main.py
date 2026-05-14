@@ -49,6 +49,7 @@ from .quark import (
     QuarkNativeError,
     quark_cookie_from_service_ticket,
     quark_has_mobile_auth,
+    normalize_quark_download_url,
     quark_qr_check,
     quark_qr_start,
 )
@@ -753,7 +754,9 @@ def _tvbox_unwrap_play_id(play_id: str) -> str:
 def _tvbox_direct_play_url(play_id: str) -> str | None:
     from urllib.parse import unquote
 
-    candidate = unquote(str(play_id or "").split("|||", 1)[0]).strip()
+    candidate = str(play_id or "").split("|||", 1)[0].strip()
+    if not candidate.startswith(("http://", "https://")):
+        candidate = unquote(candidate).strip()
     if candidate.startswith("push://"):
         candidate = candidate.removeprefix("push://").strip()
     if not candidate.startswith(("http://", "https://")):
@@ -931,6 +934,8 @@ def _tvbox_drive_play_fallback(flag: str, play_id: str):
                 if provider == "quark" and candidate_name.lower() != "raw":
                     continue
                 candidate_url = str(item.get("url") or "").strip()
+                if provider == "quark" and candidate_url:
+                    candidate_url = normalize_quark_download_url(candidate_url)
                 if not candidate_url:
                     continue
                 urls.append(
