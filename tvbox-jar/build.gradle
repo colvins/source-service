@@ -50,4 +50,6 @@ jar {
     }
     exclude('android/**')
     exclude('com/github/catvod/crawler/**')
+    exclude('META-INF/versions/**')
+    exclude('module-info.class')
 }

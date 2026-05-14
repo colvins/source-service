@@ -10,6 +10,8 @@ import com.google.gson.Gson;
 
 import java.io.ByteArrayInputStream;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -73,15 +75,10 @@ public class ColvinsTvBox extends Spider {
         }
 
         if (isDrivePlayId(id)) {
-            // 网盘资源：选 raw candidate，通过 TVBox 内置 kaiser 本地代理多线程播放
-            PlayBundle.Candidate raw = selectRawCandidate(bundle);
-            if (raw != null) {
-                String kaiserUrl = buildKaiserUrl(raw.url(), driveType(id));
-                return kaiserResult(kaiserUrl, raw.headers(), bundle.message());
-            }
-            // 没有 raw 则回退到转码直链
-            PlayBundle.Candidate candidate = selectTranscodeCandidate(bundle);
-            return directResult(candidate, bundle.message());
+            PlayBundle.Candidate preferred = selectRawCandidate(bundle);
+            if (preferred == null) preferred = bundle.candidates().get(0);
+            String kaiserUrl = buildKaiserUrl(preferred.url(), driveType(id));
+            return kaiserResult(kaiserUrl, preferred.headers(), bundle.message());
         }
 
         if (isProxyFlag(flag)) {
@@ -96,6 +93,7 @@ public class ColvinsTvBox extends Spider {
 
         // 普通资源直连
         PlayBundle.Candidate candidate = selectTranscodeCandidate(bundle);
+        if (candidate == null) candidate = bundle.candidates().get(0);
         return directResult(candidate, bundle.message());
     }
 
@@ -117,6 +115,13 @@ public class ColvinsTvBox extends Spider {
             + "&chunk=512"
             + "&key=" + driveType
             + "&type=" + driveType;
+    }
+
+
+    private String quarkProxyUrl(String url, Map<String, String> headers) {
+        String encodedUrl = Base64.getEncoder().encodeToString(nullSafe(url).getBytes(StandardCharsets.UTF_8));
+        String encodedHeader = Base64.getEncoder().encodeToString(GSON.toJson(headers == null ? new HashMap<String, String>() : headers).getBytes(StandardCharsets.UTF_8));
+        return "proxy://do=quark&type=video&url=" + encode(encodedUrl) + "&header=" + encode(encodedHeader);
     }
 
     /** 从 play_id 推断网盘类型（quark / baidu） */
@@ -150,19 +155,15 @@ public class ColvinsTvBox extends Spider {
         return null;
     }
 
-    /** 选转码 candidate，优先级 4k > super > high > low，兜底第一个非 raw */
+    /** 选转码 candidate，优先级 4k > super > high > low */
     private PlayBundle.Candidate selectTranscodeCandidate(PlayBundle bundle) {
-        String[] preferred = {"4k", "super", "high", "low"};
+        String[] preferred = {"high", "low", "super", "4k"};
         for (String name : preferred) {
             for (PlayBundle.Candidate c : bundle.candidates()) {
                 if (name.equalsIgnoreCase(c.name())) return c;
             }
         }
-        // 没有转码版，返回第一个非 raw
-        for (PlayBundle.Candidate c : bundle.candidates()) {
-            if (!"raw".equalsIgnoreCase(c.name())) return c;
-        }
-        return bundle.candidates().get(0);
+        return null;
     }
 
     // ── 工具方法 ──────────────────────────────────────────────────────────
@@ -216,6 +217,20 @@ public class ColvinsTvBox extends Spider {
 
     public static Object[] proxyFromParams(Map<String, String> params) {
         try {
+            String action = getOrEmptyStatic(params, "do");
+            String type = getOrEmptyStatic(params, "type");
+            if ("quark".equals(action) && "video".equals(type)) {
+                String url = new String(Base64.getDecoder().decode(getOrEmptyStatic(params, "url")), StandardCharsets.UTF_8);
+                Map<String, String> headers = GSON.fromJson(new String(Base64.getDecoder().decode(getOrEmptyStatic(params, "header")), StandardCharsets.UTF_8), Map.class);
+                if (headers == null) headers = new HashMap<>();
+                String[] passthrough = {"Range", "Accept", "Accept-Encoding", "Accept-Language", "Cookie", "Origin", "Referer", "User-Agent"};
+                for (Map.Entry<String, String> entry : params.entrySet()) {
+                    for (String key : passthrough) {
+                        if (key.equalsIgnoreCase(entry.getKey()) && entry.getValue() != null && entry.getValue().length() > 0) headers.put(key, entry.getValue());
+                    }
+                }
+                return HttpBridge.openProxy(new PlayBundle.Candidate("quark", url, normalizeHeaderMap(headers), ""), params);
+            }
             String token = getOrEmptyStatic(params, "token");
             PlayBundle.Candidate candidate = PROXY_CACHE.get(token);
             if (candidate == null) {
@@ -241,6 +256,16 @@ public class ColvinsTvBox extends Spider {
         String[] parts = nullSafe(token).split("\u0001", 5);
         if (parts.length != 5) throw new IllegalArgumentException("invalid proxy token");
         return parts;
+    }
+
+    private static Map<String, String> normalizeHeaderMap(Map<String, String> headers) {
+        Map<String, String> normalized = new HashMap<>();
+        if (headers == null) return normalized;
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey() == null || entry.getValue() == null) continue;
+            normalized.put(entry.getKey(), entry.getValue());
+        }
+        return normalized;
     }
 
     private static Object[] errorProxyStatic(String message) {

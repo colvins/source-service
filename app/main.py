@@ -59,10 +59,14 @@ BASE_DIR = Path(__file__).resolve().parent
 TVBOX_JAR_PATH = BASE_DIR / "artifacts" / "colvins-tvbox-spider.jar"
 TVBOX_SPIDER_TXT_PATH = BASE_DIR / "artifacts" / "colvins-tvbox-spider.txt"
 DRIVE_PARSE_CACHE_TTL_SECONDS = 300
-DRIVE_FILES_CACHE_TTL_SECONDS = 300
-TVBOX_DETAIL_CACHE_TTL_SECONDS = 120
+DRIVE_FILES_CACHE_TTL_SECONDS = 1800
+TVBOX_HOME_CACHE_TTL_SECONDS = 300
+TVBOX_CATEGORY_CACHE_TTL_SECONDS = 60
+TVBOX_DETAIL_CACHE_TTL_SECONDS = 900
 _drive_parse_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 _drive_files_cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
+_tvbox_home_cache: dict[int, tuple[float, Any]] = {}
+_tvbox_category_cache: dict[tuple[int, str, int], tuple[float, Any]] = {}
 _tvbox_detail_cache: dict[tuple[int, str], tuple[float, Any]] = {}
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -176,6 +180,60 @@ def _quark_find_child(client: QuarkClient, parent_fid: str, name: str) -> dict[s
     return None
 
 
+def _quark_ensure_save_dir(client: QuarkClient, name: str = "TV") -> str:
+    for item in _quark_payload_items(client.list_files("0")):
+        if str(item.get("file_name") or item.get("name") or "").strip() == name:
+            fid = str(item.get("fid") or "").strip()
+            if fid:
+                return fid
+    created = client.create_folder(name, "0")
+    fid = str((created.get("data") or {}).get("fid") or "").strip()
+    if not fid:
+        raise QuarkNativeError("Quark save folder id is empty.")
+    return fid
+
+
+def _quark_clear_save_dir(client: QuarkClient, save_dir_fid: str, keep_fid: str = "") -> int:
+    items = _quark_payload_items(client.list_files(save_dir_fid))
+    fids = [
+        str(item.get("fid") or "").strip()
+        for item in items
+        if str(item.get("fid") or "").strip() and str(item.get("fid") or "").strip() != str(keep_fid or "").strip()
+    ]
+    if not fids:
+        return 0
+    client.delete_files(fids)
+    return len(fids)
+
+
+def _quark_find_existing_saved_fid(client: QuarkClient, file_path: str) -> str:
+    path_parts = [part for part in (file_path or "").split("/") if part]
+    if not path_parts:
+        return ""
+    roots = ["0"]
+    try:
+        save_dir = _quark_ensure_save_dir(client)
+        if save_dir and save_dir not in roots:
+            roots.insert(0, save_dir)
+    except QuarkNativeError:
+        pass
+    for base_fid in roots:
+        current = base_fid
+        found = True
+        for part in path_parts:
+            child = _quark_find_child(client, current, part)
+            if child is None:
+                found = False
+                break
+            current = str(child.get("fid") or "")
+            if not current:
+                found = False
+                break
+        if found and current and current != base_fid:
+            return current
+    return ""
+
+
 def _quark_saved_fids_from_task(client: QuarkClient, save: dict[str, Any]) -> list[str]:
     task_id = (save.get("data") or {}).get("task_id")
     if not task_id:
@@ -279,12 +337,13 @@ def _quark_save_ancestor_and_resolve_fid(
     if root_item is None:
         raise QuarkNativeError(f"Quark share root item not found: {root_name}")
 
+    save_dir_fid = _quark_ensure_save_dir(client)
     save = client.save_share_file(
         share_id,
         stoken,
         str(root_item.get("fid") or ""),
         str(root_item.get("share_fid_token") or ""),
-        "0",
+        save_dir_fid,
         "0",
     )
     saved_fid = _quark_saved_fids_from_task(client, save)[0]
@@ -499,7 +558,7 @@ def _runtime_envelope(payload: dict[str, Any]) -> JSONResponse:
     return JSONResponse({"data": payload})
 
 
-def _runtime_raw(source_id: int, action: str, params: dict[str, Any], request: Request) -> JSONResponse:
+def _runtime_payload(source_id: int, action: str, params: dict[str, Any], request: Request) -> Any:
     try:
         with get_conn() as conn:
             payload = _normalize_runtime_payload(execute_source(conn, source_id, action, params, _base_url_from_request(request)))
@@ -509,7 +568,11 @@ def _runtime_raw(source_id: int, action: str, params: dict[str, Any], request: R
         raise
     if action in ("home", "category", "search"):
         payload = _normalize_tvbox_listing_payload(payload, action, request)
-    return JSONResponse(payload)
+    return payload
+
+
+def _runtime_raw(source_id: int, action: str, params: dict[str, Any], request: Request) -> JSONResponse:
+    return JSONResponse(_runtime_payload(source_id, action, params, request))
 
 
 def _normalize_tvbox_item(item: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
@@ -645,6 +708,7 @@ def _tvbox_detail_payload(source_id: int, payload: Any, request: Request) -> Any
                     flags.append(name)
                     groups.append("#".join(episodes))
             if flags and groups:
+                normalized_item.pop("vod_play_sources", None)
                 normalized_item["vod_play_from"] = "$$$".join(flags)
                 normalized_item["vod_play_url"] = "$$$".join(groups)
         normalized_items.append(normalized_item)
@@ -829,7 +893,7 @@ def _tvbox_drive_play_fallback(flag: str, play_id: str):
             filePath=str(info.get("path") or info.get("name") or ""),
             shareFidToken=str(info.get("shareFidToken") or info.get("share_fid_token") or ""),
             pdirFid=str(info.get("parentFid") or info.get("pdirFid") or "0"),
-            getTranscodeUrls=True,
+            getTranscodeUrls=False,
         )
 
     payload = build_payload(file_info)
@@ -863,12 +927,15 @@ def _tvbox_drive_play_fallback(flag: str, play_id: str):
             for item in raw_urls:
                 if not isinstance(item, dict):
                     continue
+                candidate_name = str(item.get("name") or item.get("quality") or item.get("format") or "播放")
+                if provider == "quark" and candidate_name.lower() != "raw":
+                    continue
                 candidate_url = str(item.get("url") or "").strip()
                 if not candidate_url:
                     continue
                 urls.append(
                     {
-                        "name": str(item.get("name") or item.get("quality") or item.get("format") or "播放"),
+                        "name": "raw" if provider == "quark" else candidate_name,
                         "url": candidate_url,
                     }
                 )
@@ -1599,7 +1666,7 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                 }
             try:
                 stoken = client.share_token(parsed["shareId"], parsed.get("password", ""))
-                save_mode = "file"
+                save_mode = "file-tv"
                 cached_fid = _quark_cached_saved_fid(provider, parsed["shareId"], payload.fid, payload.filePath)
                 cached_error = ""
                 if cached_fid:
@@ -1620,18 +1687,38 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                         }
                     except QuarkNativeError as error:
                         cached_error = str(error)[:240]
+                save_dir_fid = _quark_ensure_save_dir(client)
+                existing_fid = _quark_find_existing_saved_fid(client, payload.filePath)
+                if existing_fid:
+                    raw_candidates, headers, video_play = _quark_play_candidates_for_saved_fid(
+                        client,
+                        existing_fid,
+                        payload.flag,
+                    )
+                    _quark_store_saved_fid(provider, parsed["shareId"], payload.fid, payload.filePath, existing_fid, "existing-tv")
+                    return {
+                        "provider": provider,
+                        "mode": "native",
+                        "share": {**parsed, "stokenReady": True},
+                        "saveMode": "existing-tv",
+                        "savedFid": existing_fid,
+                        "videoPlay": video_play,
+                        "raw": {"urls": raw_candidates, "header": headers},
+                        "play": normalize_quark_play_payload({"urls": raw_candidates, "header": headers}),
+                    }
+                cleared_count = _quark_clear_save_dir(client, save_dir_fid)
                 try:
                     save = client.save_share_file(
                         parsed["shareId"],
                         stoken,
                         payload.fid,
                         payload.shareFidToken,
-                        "0",
+                        save_dir_fid,
                         payload.pdirFid,
                     )
                     saved_fid = _quark_saved_fids_from_task(client, save)[0]
                 except QuarkNativeError as direct_save_error:
-                    save_mode = "ancestor"
+                    save_mode = "ancestor-tv"
                     saved_fid, save = _quark_save_ancestor_and_resolve_fid(
                         client,
                         parsed["shareId"],
@@ -1639,6 +1726,7 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                         payload.filePath,
                     )
                     save["directSaveError"] = str(direct_save_error)[:240]
+                save["clearedSaveDirItems"] = cleared_count
                 if cached_error:
                     save["cachedPlayError"] = cached_error
                 raw_candidates, headers, video_play = _quark_play_candidates_for_saved_fid(
@@ -2095,19 +2183,30 @@ def runtime_tvbox_json(
 
 @app.get("/api/tvbox/source/{source_id}/home")
 def runtime_tvbox_home(source_id: int, request: Request):
-    return _runtime_raw(source_id, "home", {}, request)
+    cached = _cache_get(_tvbox_home_cache, source_id)
+    if cached is not None:
+        return JSONResponse(cached)
+    payload = _runtime_payload(source_id, "home", {}, request)
+    _cache_set(_tvbox_home_cache, source_id, TVBOX_HOME_CACHE_TTL_SECONDS, payload)
+    return JSONResponse(payload)
 
 
 @app.get("/api/tvbox/source/{source_id}/category")
 def runtime_tvbox_category(source_id: int, request: Request, id: str = "", tid: str = "", pg: int = 1, page: int = 1):
     resolved_category_id = id or tid
     resolved_page = page or pg or 1
-    return _runtime_raw(
+    cache_key = (source_id, resolved_category_id, resolved_page)
+    cached = _cache_get(_tvbox_category_cache, cache_key)
+    if cached is not None:
+        return JSONResponse(cached)
+    payload = _runtime_payload(
         source_id,
         "category",
         {"categoryId": resolved_category_id, "id": resolved_category_id, "tid": resolved_category_id, "page": resolved_page, "pg": resolved_page},
         request,
     )
+    _cache_set(_tvbox_category_cache, cache_key, TVBOX_CATEGORY_CACHE_TTL_SECONDS, payload)
+    return JSONResponse(payload)
 
 
 @app.get("/api/tvbox/source/{source_id}/search")
@@ -2161,6 +2260,10 @@ def runtime_tvbox_play(source_id: int, request: Request, flag: str = "", id: str
 @app.get("/api/tvbox/source/{source_id}/play-options")
 def runtime_tvbox_play_options(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = "", play: str = ""):
     resolved_play_id = _tvbox_unwrap_play_id(play or playId or id)
+    if "|colvins:" in resolved_play_id and ("pan.quark.cn/" in resolved_play_id or "pan.baidu.com/" in resolved_play_id):
+        fallback = _tvbox_drive_play_fallback(flag, resolved_play_id)
+        if fallback is not None:
+            return JSONResponse(_tvbox_play_options(fallback))
     with get_conn() as conn:
         payload = execute_source(
             conn,
@@ -2181,14 +2284,18 @@ def runtime_tvbox_play_options(source_id: int, request: Request, flag: str = "",
 @app.get("/api/tvbox/source/{source_id}/play-url")
 def runtime_tvbox_play_url(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = "", play: str = ""):
     resolved_play_id = _tvbox_unwrap_play_id(play or playId or id)
-    with get_conn() as conn:
-        payload = _normalize_runtime_payload(execute_source(
-            conn,
-            source_id,
-            "play",
-            {"flag": flag, "playId": resolved_play_id, "id": resolved_play_id},
-            _base_url_from_request(request),
-        ))
+    if "|colvins:" in resolved_play_id and ("pan.quark.cn/" in resolved_play_id or "pan.baidu.com/" in resolved_play_id):
+        fallback = _tvbox_drive_play_fallback(flag, resolved_play_id)
+        payload = _normalize_runtime_payload(fallback or {})
+    else:
+        with get_conn() as conn:
+            payload = _normalize_runtime_payload(execute_source(
+                conn,
+                source_id,
+                "play",
+                {"flag": flag, "playId": resolved_play_id, "id": resolved_play_id},
+                _base_url_from_request(request),
+            ))
     if isinstance(payload, dict):
         url = _tvbox_direct_play_url(str(payload.get("url") or ""))
         if not url:

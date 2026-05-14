@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import gzip
 import random
 import re
 import time
 import uuid
+import zlib
 from io import BytesIO
 from typing import Any
 from http.cookiejar import CookieJar
@@ -29,6 +31,19 @@ DEFAULT_UA = (
     "(KHTML, like Gecko) quark-cloud-drive/3.14.2 Chrome/112.0.5615.165 "
     "Electron/24.1.3.8 Safari/537.36 Channel/pckk_other_ch"
 )
+PC_API_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Origin": "https://pan.quark.cn",
+    "Referer": "https://pan.quark.cn/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+}
+
+PC_PLAY_HEADERS = {
+    "Referer": "https://pan.quark.cn/",
+}
 
 
 def quark_cookie_mobile_params(cookie: str) -> dict[str, str]:
@@ -130,17 +145,56 @@ class QuarkClient:
     def has_mobile_auth(self) -> bool:
         return all(self.mobile_params.get(key) for key in ("kps", "sign", "vcode"))
 
-    def _headers(self, include_cookie: bool = True) -> dict[str, str]:
-        headers = {
-            "User-Agent": self.user_agent,
-            "Origin": "https://pan.quark.cn",
-            "Referer": "https://pan.quark.cn/",
-            "Accept": "application/json, text/plain, */*",
-            "Content-Type": "application/json",
-        }
+    def _headers(self, include_cookie: bool = True, *, playback: bool = False) -> dict[str, str]:
+        headers = {"User-Agent": self.user_agent}
+        if not playback:
+            headers["Content-Type"] = "application/json"
+        headers.update(PC_PLAY_HEADERS if playback else PC_API_HEADERS)
         if include_cookie and self.cookie:
             headers["Cookie"] = self.cookie
         return headers
+
+    def _refresh_cookie_from_response(self, response) -> None:
+        values: list[str] = []
+        try:
+            values = list(response.headers.get_all("Set-Cookie") or [])
+        except Exception:
+            value = response.headers.get("Set-Cookie")
+            values = [value] if value else []
+        joined = ";".join(value for value in values if value)
+        match = re.search(r"(?<!\w)__puus=([^;]+)", joined)
+        if not match:
+            return
+        value = match.group(1).strip()
+        if not value:
+            return
+        if re.search(r"(?<!\w)__puus=", self.cookie):
+            self.cookie = re.sub(r"(?<!\w)__puus=[^;]*", f"__puus={value}", self.cookie)
+        elif self.cookie:
+            self.cookie = self.cookie.rstrip("; ") + f"; __puus={value}"
+        else:
+            self.cookie = f"__puus={value}"
+
+    def _decode_response_body(self, response) -> str:
+        raw = response.read()
+        encoding = str(response.headers.get("Content-Encoding") or "").lower()
+        if encoding == "gzip":
+            raw = gzip.decompress(raw)
+        elif encoding == "deflate":
+            raw = zlib.decompress(raw)
+        return raw.decode("utf-8")
+
+    def _decode_error_body(self, error: HTTPError) -> str:
+        raw = error.read()
+        encoding = str(error.headers.get("Content-Encoding") or "").lower()
+        try:
+            if encoding == "gzip":
+                raw = gzip.decompress(raw)
+            elif encoding == "deflate":
+                raw = zlib.decompress(raw)
+        except Exception:
+            pass
+        return raw.decode("utf-8", errors="replace")
 
     def _params(self, mobile: bool = False, **extra: Any) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -200,9 +254,10 @@ class QuarkClient:
         request = Request(url, data=data, headers=self._headers(include_cookie=not mobile), method=method)
         try:
             with urlopen(request, timeout=45) as response:
-                payload = json.loads(response.read().decode("utf-8") or "{}")
+                self._refresh_cookie_from_response(response)
+                payload = json.loads(self._decode_response_body(response) or "{}")
         except HTTPError as error:
-            detail = error.read().decode("utf-8", errors="replace")
+            detail = self._decode_error_body(error)
             raise QuarkNativeError(f"Quark HTTP {error.code}: {detail[:240]}") from error
         except URLError as error:
             raise QuarkNativeError(f"Quark network error: {error.reason}") from error
@@ -295,6 +350,31 @@ class QuarkClient:
         last.setdefault("data", {})["list"] = merged
         return last
 
+
+    def create_folder(self, name: str, parent_fid: str = "0") -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "file",
+            body={
+                "pdir_fid": parent_fid or "0",
+                "file_name": name,
+                "dir_path": "",
+                "dir_init_lock": "false",
+            },
+        )
+
+    def delete_files(self, fids: list[str]) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "file/delete",
+            params={"uc_param_str": ""},
+            body={
+                "action_type": 2,
+                "filelist": [str(fid) for fid in fids if str(fid or "").strip()],
+                "exclude_fids": [],
+            },
+        )
+
     def save_share_file(
         self,
         pwd_id: str,
@@ -361,7 +441,8 @@ class QuarkClient:
                 "supports": "fmp4",
             },
         )
-        return payload, {"User-Agent": self.user_agent, "Referer": "https://pan.quark.cn/", "Cookie": self.cookie}
+        headers = self._headers(playback=True)
+        return payload, headers
 
     def download_url(self, fid: str) -> str:
         payload = self._request(

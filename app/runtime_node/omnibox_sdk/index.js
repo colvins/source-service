@@ -1,6 +1,9 @@
 const CONTEXT = JSON.parse(process.env.COLVINS_CONTEXT || "{}");
 const API_BASE_URL = process.env.COLVINS_SOURCE_API_URL || CONTEXT.baseURL || process.env.OMNIBOX_API_URL || "";
+const RUNTIME_CACHE_DIR = process.env.COLVINS_RUNTIME_CACHE_DIR || "";
 const driveFolderPathCache = new Map();
+const crypto = require("crypto");
+const fs = require("fs");
 
 async function callAPI(endpoint, data = {}) {
   if (!API_BASE_URL) {
@@ -174,11 +177,44 @@ async function sniffVideo() {
 }
 
 async function getCache(key) {
-  return null;
+  if (!RUNTIME_CACHE_DIR || !key) return null;
+  try {
+    const filePath = getRuntimeCacheFilePath(key);
+    if (!fs.existsSync(filePath)) return null;
+    const payload = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!payload || typeof payload !== "object") return null;
+    if (payload.expiresAt && Date.now() > payload.expiresAt) {
+      fs.unlinkSync(filePath);
+      return null;
+    }
+    return payload.value === undefined ? null : payload.value;
+  } catch (error) {
+    await log("warn", `读取运行时缓存失败: key=${key}, error=${error.message}`);
+    return null;
+  }
 }
 
-async function setCache() {
-  return false;
+async function setCache(key, value, exSeconds = 0) {
+  if (!RUNTIME_CACHE_DIR || !key) return false;
+  try {
+    fs.mkdirSync(RUNTIME_CACHE_DIR, { recursive: true });
+    const filePath = getRuntimeCacheFilePath(key);
+    const ttl = Number(exSeconds || 0);
+    const payload = {
+      expiresAt: ttl > 0 ? Date.now() + ttl * 1000 : 0,
+      value,
+    };
+    fs.writeFileSync(filePath, JSON.stringify(payload), "utf8");
+    return true;
+  } catch (error) {
+    await log("warn", `写入运行时缓存失败: key=${key}, error=${error.message}`);
+    return false;
+  }
+}
+
+function getRuntimeCacheFilePath(key) {
+  const digest = crypto.createHash("sha1").update(String(key)).digest("hex");
+  return `${RUNTIME_CACHE_DIR}/${digest}.json`;
 }
 
 async function getDriveInfoByShareURL(shareURL) {
@@ -250,9 +286,11 @@ async function getDriveVideoPlayInfo(shareURL, fileOrFid, flag = "", getTranscod
     raw: result,
   };
   if (Array.isArray(data.urls)) {
+    const sorted = preferPlayableTranscodeUrls(data.urls);
     return {
       ...data,
-      urls: preferPlayableTranscodeUrls(data.urls),
+      url: sorted,
+      urls: sorted,
     };
   }
   if (Array.isArray(data.url)) {

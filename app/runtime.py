@@ -12,6 +12,7 @@ RUNTIME_DIR = Path(os.environ.get("COLVINS_RUNTIME_DIR", str(APP_ROOT / ".runtim
 JS_SHIM_DIR = Path(os.environ.get("COLVINS_JS_SHIM_DIR", str(BASE_DIR / "runtime_node")))
 PY_SHIM_DIR = Path(os.environ.get("COLVINS_PY_SHIM_DIR", str(BASE_DIR / "runtime_py")))
 NODE_GLOBAL_MODULE_DIR = Path("/usr/local/lib/node_modules")
+RUNTIME_CACHE_DIR = RUNTIME_DIR / "cache"
 
 
 def _source_row(conn: sqlite3.Connection, source_id: int) -> sqlite3.Row:
@@ -59,6 +60,8 @@ def _execute_js(script_content: str, action: str, params: dict[str, Any], contex
     env["COLVINS_ACTION"] = action
     env["COLVINS_PARAMS"] = json.dumps(params, ensure_ascii=False)
     env["COLVINS_CONTEXT"] = json.dumps(context, ensure_ascii=False)
+    env["COLVINS_RUNTIME_CACHE_DIR"] = str(RUNTIME_CACHE_DIR)
+    RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
         result = subprocess.run(
