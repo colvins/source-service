@@ -74,7 +74,7 @@ public class ColvinsTvBox extends Spider {
         PlayBundle.Candidate candidate = selectCandidate(flag, bundle);
         PlayBundle selected = new PlayBundle(Collections.singletonList(candidate), bundle.message());
         playCache.put(cacheKey(flag, id), selected);
-        if (isProxyFlag(flag)) {
+        if (isDrivePlayId(id) || isProxyFlag(flag)) {
             String token = encodeProxyToken(config, flag, id, 0);
             PROXY_CACHE.put(token, candidate);
             return "{\"parse\":0,\"url\":\"" + escape(proxyUrl(token)) + "\"}";
@@ -138,6 +138,11 @@ public class ColvinsTvBox extends Spider {
     private boolean isDirectFlag(String flag) {
         String text = flag == null ? "" : flag;
         return text.contains("直连");
+    }
+
+    private boolean isDrivePlayId(String value) {
+        String text = value == null ? "" : value;
+        return text.contains("|colvins:") && (text.contains("pan.quark.cn/") || text.contains("pan.baidu.com/"));
     }
 
     private String directResult(PlayBundle.Candidate candidate, String message) {

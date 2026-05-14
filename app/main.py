@@ -613,8 +613,7 @@ def _tvbox_detail_payload(source_id: int, payload: Any, request: Request) -> Any
         normalized_item = _normalize_tvbox_item(item, request)
         sources = item.get("vod_play_sources")
         if isinstance(sources, list) and sources:
-            flags = []
-            groups = []
+            grouped_sources: dict[str, list[str]] = {}
             for source in sources:
                 if not isinstance(source, dict):
                     continue
@@ -622,17 +621,29 @@ def _tvbox_detail_payload(source_id: int, payload: Any, request: Request) -> Any
                 episodes = source.get("episodes")
                 if not name or not isinstance(episodes, list):
                     continue
-                encoded_episodes = []
+                base_name = name
+                for suffix in ("-本地代理", "-服务端代理", "-直连"):
+                    if base_name.endswith(suffix):
+                        base_name = base_name[: -len(suffix)].strip() or base_name
+                        break
+                if base_name.endswith("1") and "网盘" in base_name:
+                    base_name = base_name[:-1].strip() or base_name
+                encoded_episodes = grouped_sources.setdefault(base_name, [])
                 for episode in episodes:
                     if not isinstance(episode, dict):
                         continue
                     episode_name = str(episode.get("name") or episode.get("title") or "").strip()
                     play_id = str(episode.get("playId") or episode.get("id") or episode.get("url") or "").strip()
                     if episode_name and play_id:
-                        encoded_episodes.append(f"{episode_name}${play_id}")
-                if encoded_episodes:
+                        encoded = f"{episode_name}${play_id}"
+                        if encoded not in encoded_episodes:
+                            encoded_episodes.append(encoded)
+            flags = []
+            groups = []
+            for name, episodes in grouped_sources.items():
+                if episodes:
                     flags.append(name)
-                    groups.append("#".join(encoded_episodes))
+                    groups.append("#".join(episodes))
             if flags and groups:
                 normalized_item["vod_play_from"] = "$$$".join(flags)
                 normalized_item["vod_play_url"] = "$$$".join(groups)
@@ -806,8 +817,45 @@ def _tvbox_drive_play_fallback(flag: str, play_id: str):
     result = drive_share_play(str(parsed.get("provider") or "quark"), payload)
     if isinstance(result, dict):
         raw = result.get("raw")
-        if isinstance(raw, dict) and raw.get("urls"):
-            return raw
+        play = result.get("play")
+        raw_urls = raw.get("urls") if isinstance(raw, dict) else None
+        if isinstance(raw_urls, list) and raw_urls:
+            selected = play.get("selected") if isinstance(play, dict) else None
+            top_header = {}
+            if isinstance(selected, dict) and isinstance(selected.get("headers"), dict):
+                top_header = {
+                    str(key): str(value)
+                    for key, value in selected.get("headers", {}).items()
+                    if key and value is not None
+                }
+            elif isinstance(raw.get("header"), dict):
+                top_header = {
+                    str(key): str(value)
+                    for key, value in raw.get("header", {}).items()
+                    if key and value is not None
+                }
+
+            urls = []
+            for item in raw_urls:
+                if not isinstance(item, dict):
+                    continue
+                candidate_url = str(item.get("url") or "").strip()
+                if not candidate_url:
+                    continue
+                urls.append(
+                    {
+                        "name": str(item.get("name") or item.get("quality") or item.get("format") or "播放"),
+                        "url": candidate_url,
+                    }
+                )
+            if urls:
+                return {
+                    "urls": urls,
+                    "flag": share_url,
+                    "header": top_header,
+                    "parse": 0,
+                    "danmaku": [],
+                }
     return None
 
 
