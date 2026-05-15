@@ -64,11 +64,15 @@ DRIVE_FILES_CACHE_TTL_SECONDS = 1800
 TVBOX_HOME_CACHE_TTL_SECONDS = 300
 TVBOX_CATEGORY_CACHE_TTL_SECONDS = 60
 TVBOX_DETAIL_CACHE_TTL_SECONDS = 900
+TVBOX_DRIVE_PLAY_CACHE_TTL_SECONDS = 900
+TVBOX_DRIVE_FILE_INFO_CACHE_TTL_SECONDS = 1800
 _drive_parse_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 _drive_files_cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
 _tvbox_home_cache: dict[int, tuple[float, Any]] = {}
 _tvbox_category_cache: dict[tuple[int, str, int], tuple[float, Any]] = {}
 _tvbox_detail_cache: dict[tuple[int, str], tuple[float, Any]] = {}
+_tvbox_drive_play_cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
+_tvbox_drive_file_info_cache: dict[tuple[str, str, str, str], tuple[float, Any]] = {}
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
@@ -247,7 +251,7 @@ def _quark_saved_fids_from_task(client: QuarkClient, save: dict[str, Any]) -> li
 
 
 def _quark_play_candidates_for_saved_fid(client: QuarkClient, saved_fid: str, fallback_name: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
-    headers = {'User-Agent': client.user_agent, 'Referer': 'https://pan.quark.cn/', 'Cookie': client.cookie}
+    headers = client.play_headers()
     video_play: dict[str, Any] = {'colvins': {}}
     video_error = ""
     try:
@@ -403,13 +407,14 @@ def export_tvbox(subscription: dict[str, Any], base_url: str) -> dict[str, Any]:
     spider = tvbox_spider_with_md5(base_url)
     sites = []
     for source in subscription["sources"]:
+        if not _tvbox_source_has_classes_for_export(int(source["id"]), base_url):
+            continue
         sites.append(
             {
-                "key": f"csp_source_{source['id']}",
+                "key": f"source_{source['id']}_20260515b",
                 "name": source["name"],
                 "type": 3,
-                "api": "csp_ColvinsTvBox",
-                "jar": spider,
+                "api": "csp_Source" + str(int(source["id"])) + "Guard",
                 "searchable": 1,
                 "changeable": 1,
                 "quickSearch": 1,
@@ -424,6 +429,7 @@ def export_tvbox(subscription: dict[str, Any], base_url: str) -> dict[str, Any]:
             }
         )
     return {
+        "notice": "colvins",
         "sites": sites,
         "lives": [],
         "parses": [],
@@ -433,13 +439,23 @@ def export_tvbox(subscription: dict[str, Any], base_url: str) -> dict[str, Any]:
     }
 
 
+def _tvbox_source_has_classes_for_export(source_id: int, base_url: str) -> bool:
+    # 已确认这些源在 TVBox home 返回空分类，先不下发给 TV 端。
+    if source_id in {7, 8}:
+        return False
+    cached = _cache_get(_tvbox_home_cache, source_id)
+    if cached is not None:
+        return bool((cached or {}).get("class"))
+    return True
+
+
 def tvbox_spider_with_md5(base_url: str) -> str:
     if TVBOX_SPIDER_TXT_PATH.exists():
         digest = hashlib.md5(TVBOX_SPIDER_TXT_PATH.read_bytes()).hexdigest()
-        return f"{base_url}/api/tvbox/spider/colvins-tvbox-spider.txt;md5;{digest}"
+        return f"{base_url}/api/tvbox/spider/colvins-tvbox-spider-{digest}.txt;md5;{digest}"
     if TVBOX_JAR_PATH.exists():
         digest = hashlib.md5(TVBOX_JAR_PATH.read_bytes()).hexdigest()
-        return f"{base_url}/api/tvbox/jar/colvins-tvbox-spider.jar;md5;{digest}"
+        return f"{base_url}/api/tvbox/spider/colvins-tvbox-spider-{digest}.txt;md5;{digest}"
     return ""
 
 
@@ -577,28 +593,134 @@ def _runtime_raw(source_id: int, action: str, params: dict[str, Any], request: R
 
 
 def _normalize_tvbox_item(item: dict[str, Any], request: Request | None = None) -> dict[str, Any]:
-    normalized = dict(item)
+    allowed_keys = {
+        "vod_id",
+        "vod_name",
+        "vod_pic",
+        "vod_remarks",
+        "vod_year",
+        "vod_area",
+        "vod_director",
+        "vod_actor",
+        "vod_content",
+        "vod_play_from",
+        "vod_play_url",
+        "vod_tag",
+        "type_name",
+        "action",
+        "land",
+        "circle",
+        "ratio",
+    }
+    normalized = {key: value for key, value in item.items() if key in allowed_keys}
     defaults = {
         "vod_id": "",
         "vod_name": "",
         "vod_pic": "",
+        "vod_remarks": "",
         "vod_content": "",
         "vod_year": "",
         "vod_area": "",
-        "vod_lang": "",
         "vod_actor": "",
         "vod_director": "",
         "vod_play_url": "",
         "vod_play_from": "",
         "type_name": "",
-        "vod_time": "",
-        "vod_remarks": "",
-        "vod_sub": "",
         "vod_tag": "",
-        "vod_class": "",
     }
     for key, value in defaults.items():
-        normalized.setdefault(key, value)
+        normalized[key] = _tvbox_string(normalized.get(key, value))
+    for key in ("land", "circle"):
+        if key in normalized:
+            normalized[key] = _tvbox_int(normalized.get(key))
+    if "ratio" in normalized:
+        normalized["ratio"] = _tvbox_float(normalized.get("ratio"))
+    return normalized
+
+
+def _tvbox_string(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return ""
+
+
+def _tvbox_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _tvbox_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_tvbox_class(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return item
+    type_id = item.get("type_id", item.get("id", ""))
+    type_name = item.get("type_name", item.get("name", ""))
+    normalized = {
+        "type_id": _tvbox_string(type_id),
+        "type_name": _tvbox_string(type_name),
+    }
+    type_flag = item.get("type_flag")
+    if type_flag not in (None, ""):
+        normalized["type_flag"] = _tvbox_string(type_flag)
+    for key in ("land", "circle"):
+        if key in item:
+            normalized[key] = _tvbox_int(item.get(key))
+    if "ratio" in item:
+        normalized["ratio"] = _tvbox_float(item.get("ratio"))
+    return normalized
+
+
+def _normalize_tvbox_filters(filters: Any) -> Any:
+    if not isinstance(filters, dict):
+        return filters
+
+    normalized_filters: dict[str, Any] = {}
+    for type_id, entries in filters.items():
+        if isinstance(entries, dict):
+            normalized_filters[str(type_id)] = _normalize_tvbox_filter(entries)
+        elif isinstance(entries, list):
+            normalized_filters[str(type_id)] = [
+                _normalize_tvbox_filter(entry) if isinstance(entry, dict) else entry
+                for entry in entries
+            ]
+        else:
+            normalized_filters[str(type_id)] = entries
+    return normalized_filters
+
+
+def _normalize_tvbox_filter(entry: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(entry)
+    values = normalized.get("value")
+    if isinstance(values, list):
+        normalized["value"] = [
+            _normalize_tvbox_filter_value(value) if isinstance(value, dict) else value
+            for value in values
+        ]
+    return normalized
+
+
+def _normalize_tvbox_filter_value(value: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(value)
+    if "n" not in normalized:
+        normalized["n"] = str(normalized.get("name") or normalized.get("label") or "")
+    if "v" not in normalized:
+        normalized["v"] = str(normalized.get("value") or normalized.get("id") or "")
+    normalized.pop("name", None)
+    normalized.pop("label", None)
+    normalized.pop("value", None)
+    normalized.pop("id", None)
     return normalized
 
 
@@ -642,11 +764,11 @@ def _normalize_tvbox_listing_payload(payload: Any, action: str, request: Request
 
     if action == "home":
         home_payload = {
-            "class": normalized.get("class") or [],
+            "class": [_normalize_tvbox_class(item) for item in normalized.get("class") or []],
             "list": normalized_items,
         }
         if "filters" in normalized:
-            home_payload["filters"] = normalized.get("filters")
+            home_payload["filters"] = _normalize_tvbox_filters(normalized.get("filters"))
         return home_payload
 
     if pagecount_value < 0:
@@ -887,6 +1009,10 @@ def _tvbox_drive_play_fallback(flag: str, play_id: str):
     if not isinstance(file_info, dict):
         return None
     provider = str(parsed.get("provider") or "quark")
+    cache_key = (provider, share_url, str(file_info.get("fid") or file_info.get("name") or ""))
+    cached = _cache_get(_tvbox_drive_play_cache, cache_key)
+    if cached is not None:
+        return cached
 
     def build_payload(info: dict[str, Any]) -> DrivePlayPayload:
         return DrivePlayPayload(
@@ -945,13 +1071,18 @@ def _tvbox_drive_play_fallback(flag: str, play_id: str):
                     }
                 )
             if urls:
-                return {
-                    "urls": urls,
-                    "flag": share_url,
-                    "header": top_header,
-                    "parse": 0,
-                    "danmaku": [],
-                }
+                return _cache_set(
+                    _tvbox_drive_play_cache,
+                    cache_key,
+                    TVBOX_DRIVE_PLAY_CACHE_TTL_SECONDS,
+                    {
+                        "urls": urls,
+                        "flag": share_url,
+                        "header": top_header,
+                        "parse": 0,
+                        "danmaku": [],
+                    },
+                )
     return None
 
 
@@ -971,6 +1102,10 @@ def _resolve_drive_file_info(provider: str, share_url: str, file_info: dict[str,
     target_fid = str(file_info.get("fid") or "").strip()
     target_token = str(file_info.get("shareFidToken") or file_info.get("share_fid_token") or "").strip()
     target_name = str(file_info.get("name") or file_info.get("path") or "").split("/")[-1].strip()
+    cache_key = (provider, share_url, target_fid, target_token or target_name)
+    cached = _cache_get(_tvbox_drive_file_info_cache, cache_key)
+    if cached is not None:
+        return cached
     try:
         result = drive_share_videos(
             provider,
@@ -1001,13 +1136,13 @@ def _resolve_drive_file_info(provider: str, share_url: str, file_info: dict[str,
 
     for item in videos:
         if isinstance(item, dict) and target_fid and str(item.get("fid") or "").strip() == target_fid:
-            return merge(item)
+            return _cache_set(_tvbox_drive_file_info_cache, cache_key, TVBOX_DRIVE_FILE_INFO_CACHE_TTL_SECONDS, merge(item))
     for item in videos:
         if isinstance(item, dict) and target_token and str(item.get("shareFidToken") or "").strip() == target_token:
-            return merge(item)
+            return _cache_set(_tvbox_drive_file_info_cache, cache_key, TVBOX_DRIVE_FILE_INFO_CACHE_TTL_SECONDS, merge(item))
     for item in videos:
         if isinstance(item, dict) and target_name and str(item.get("name") or "").strip() == target_name:
-            return merge(item)
+            return _cache_set(_tvbox_drive_file_info_cache, cache_key, TVBOX_DRIVE_FILE_INFO_CACHE_TTL_SECONDS, merge(item))
     return None
 
 
@@ -2024,20 +2159,24 @@ def export_subscription_tvbox_config(subscription_id: int, token: str | None = N
     return export_tvbox_config(subscription_id, token)
 
 
-@app.get("/api/tvbox/jar/colvins-tvbox-spider.jar")
-def tvbox_spider_jar():
+@app.get("/api/tvbox/jar/{filename}")
+def tvbox_spider_jar(filename: str):
+    if not filename.startswith("colvins-tvbox-spider") or not filename.endswith(".jar"):
+        raise HTTPException(status_code=404, detail="tvbox spider artifact not found")
     if TVBOX_SPIDER_TXT_PATH.exists():
-        return FileResponse(TVBOX_SPIDER_TXT_PATH, media_type="application/octet-stream", filename="colvins-tvbox-spider.jar")
+        return FileResponse(TVBOX_SPIDER_TXT_PATH, media_type="application/octet-stream", filename=filename)
     if TVBOX_JAR_PATH.exists():
-        return FileResponse(TVBOX_JAR_PATH, media_type="application/java-archive", filename="colvins-tvbox-spider.jar")
+        return FileResponse(TVBOX_JAR_PATH, media_type="application/java-archive", filename=filename)
     raise HTTPException(status_code=404, detail="tvbox spider artifact not built")
 
 
-@app.get("/api/tvbox/spider/colvins-tvbox-spider.txt")
-def tvbox_spider_txt():
+@app.get("/api/tvbox/spider/{filename}")
+def tvbox_spider_txt(filename: str):
+    if not filename.startswith("colvins-tvbox-spider") or not filename.endswith(".txt"):
+        raise HTTPException(status_code=404, detail="tvbox spider artifact not found")
     if not TVBOX_SPIDER_TXT_PATH.exists():
         raise HTTPException(status_code=404, detail="tvbox spider txt not built")
-    return FileResponse(TVBOX_SPIDER_TXT_PATH, media_type="application/octet-stream", filename="colvins-tvbox-spider.txt")
+    return FileResponse(TVBOX_SPIDER_TXT_PATH, media_type="application/octet-stream", filename=filename)
 
 
 @app.get("/api/runtime/source/{source_id}")

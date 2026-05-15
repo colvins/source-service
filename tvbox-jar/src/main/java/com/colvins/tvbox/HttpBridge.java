@@ -6,11 +6,14 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
-import java.net.URI;
+import java.net.URL;
 import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -44,7 +47,7 @@ public final class HttpBridge {
     }
 
     public static HttpResponse getJson(String url) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) URI.create(url).toURL().openConnection();
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setConnectTimeout(15000);
         connection.setReadTimeout(30000);
         connection.setRequestMethod("GET");
@@ -63,27 +66,26 @@ public final class HttpBridge {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException("play-options request failed: HTTP " + response.statusCode());
         }
-        JsonObject root = JsonParser.parseString(response.body()).getAsJsonObject();
-        String message = root.has("message") ? safeString(root.get("message")) : "";
+        JSONObject root = new JSONObject(response.body());
+        String message = root.optString("message", "");
         List<PlayBundle.Candidate> candidates = new ArrayList<>();
-        JsonArray items = root.has("candidates") && root.get("candidates").isJsonArray() ? root.getAsJsonArray("candidates") : new JsonArray();
-        for (JsonElement item : items) {
-            if (!item.isJsonObject()) continue;
-            JsonObject object = item.getAsJsonObject();
-            String name = safeString(object.get("name"));
-            String candidateUrl = safeString(object.get("url"));
-            String format = safeString(object.get("format"));
+        JSONArray items = root.optJSONArray("candidates");
+        if (items == null) items = new JSONArray();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject object = items.optJSONObject(index);
+            if (object == null) continue;
+            String name = object.optString("name", "");
+            String candidateUrl = object.optString("url", "");
+            String format = object.optString("format", "");
             if (!candidateUrl.startsWith("http://") && !candidateUrl.startsWith("https://")) continue;
-            Map<String, String> headers = object.has("headers") && object.get("headers").isJsonObject()
-                ? GSON.fromJson(object.get("headers"), Map.class)
-                : Collections.emptyMap();
+            Map<String, String> headers = jsonObjectToStringMap(object.optJSONObject("headers"));
             candidates.add(new PlayBundle.Candidate(isBlank(name) ? "直连" : name, candidateUrl, normalizeHeaders(headers), format));
         }
         return new PlayBundle(candidates, message);
     }
 
     public static Object[] openProxy(PlayBundle.Candidate candidate, Map<String, String> params) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) URI.create(sanitizeUrl(candidate.url())).toURL().openConnection();
+        HttpURLConnection connection = (HttpURLConnection) new URL(sanitizeUrl(candidate.url())).openConnection();
         connection.setInstanceFollowRedirects(true);
         connection.setConnectTimeout(15000);
         connection.setReadTimeout(30000);
@@ -137,6 +139,29 @@ public final class HttpBridge {
         }
         return normalized;
     }
+
+    private static Map<String, String> jsonObjectToStringMap(JSONObject object) {
+        if (object == null) return Collections.emptyMap();
+        Map<String, String> values = new LinkedHashMap<>();
+        putHeader(values, object, "User-Agent");
+        putHeader(values, object, "Referer");
+        putHeader(values, object, "Cookie");
+        putHeader(values, object, "Origin");
+        putHeader(values, object, "Accept");
+        putHeader(values, object, "Accept-Language");
+        putHeader(values, object, "Accept-Encoding");
+        putHeader(values, object, "Content-Type");
+        putHeader(values, object, "Range");
+        return values;
+    }
+
+    private static void putHeader(Map<String, String> values, JSONObject object, String key) {
+        if (values == null || object == null || key == null) return;
+        String value = object.optString(key, "");
+        if (isBlank(value)) return;
+        values.put(key, value);
+    }
+
 
     private static String readAll(InputStream stream) throws Exception {
         if (stream == null) return "";

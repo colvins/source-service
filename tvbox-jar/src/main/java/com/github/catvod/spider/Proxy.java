@@ -3,8 +3,7 @@ package com.github.catvod.spider;
 import java.io.ByteArrayInputStream;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
+import java.net.URL;
 import java.util.Map;
 
 public class Proxy {
@@ -12,12 +11,8 @@ public class Proxy {
     private static int port = -1;
     private static Method hostGetUrl;
 
-    public static Object[] proxy(Map<String, String> params) throws Exception {
-        String action = params == null ? "" : params.get("do");
-        if ("ck".equals(action)) {
-            return new Object[]{200, "text/plain; charset=utf-8", new ByteArrayInputStream("ok".getBytes(StandardCharsets.UTF_8))};
-        }
-        return ColvinsTvBox.proxyFromParams(params);
+    public static Object[] proxy(Map<String, String> params) {
+        return Init.proxyInvoke(params);
     }
 
     public static String getUrl() {
@@ -65,7 +60,7 @@ public class Proxy {
     private static boolean ping(int p) {
         HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) URI.create("http://127.0.0.1:" + p + "/proxy?do=ck").toURL().openConnection();
+            connection = (HttpURLConnection) new URL("http://127.0.0.1:" + p + "/proxy?do=ck").openConnection();
             connection.setConnectTimeout(120);
             connection.setReadTimeout(120);
             return connection.getResponseCode() == 200;
@@ -73,6 +68,14 @@ public class Proxy {
             return false;
         } finally {
             if (connection != null) connection.disconnect();
+        }
+    }
+
+    public static Object[] error(String message) {
+        try {
+            return new Object[]{502, "text/plain; charset=utf-8", new ByteArrayInputStream((message == null ? "" : message).getBytes("UTF-8"))};
+        } catch (Exception error) {
+            return new Object[]{502, "text/plain; charset=utf-8", new ByteArrayInputStream(new byte[0])};
         }
     }
 }

@@ -42,7 +42,14 @@ PC_API_HEADERS = {
 }
 
 PC_PLAY_HEADERS = {
+    "Accept": "*/*",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Origin": "https://pan.quark.cn",
     "Referer": "https://pan.quark.cn/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
 
 
@@ -467,6 +474,9 @@ class QuarkClient:
         )
         headers = self._headers(playback=True)
         return payload, headers
+
+    def play_headers(self) -> dict[str, str]:
+        return self._headers(playback=True)
 
     def download_url(self, fid: str) -> str:
         payload = self._request(
