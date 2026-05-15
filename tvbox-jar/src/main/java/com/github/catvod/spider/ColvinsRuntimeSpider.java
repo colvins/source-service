@@ -168,10 +168,6 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
     }
 
     private String resolveKaiserBaseUrl() {
-        if (sdkInt() <= 25) {
-            String legacyBase = resolveHostKaiserBase();
-            if (!isBlank(legacyBase)) return legacyBase;
-        }
         if (isPortOpen("127.0.0.1", 8096, 150)) {
             return "http://127.0.0.1:8096/kaiser";
         }

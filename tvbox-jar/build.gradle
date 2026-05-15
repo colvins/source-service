@@ -28,17 +28,15 @@ dependencies {
     implementation 'org.json:json:20240303'
 }
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
-}
+sourceCompatibility = JavaVersion.VERSION_1_8
+targetCompatibility = JavaVersion.VERSION_1_8
 
-tasks.withType(JavaCompile).configureEach {
+tasks.withType(JavaCompile).all {
     options.encoding = 'UTF-8'
 }
 
 jar {
-    archiveBaseName = 'colvins-tvbox-spider'
+    baseName = 'colvins-tvbox-spider'
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {
         attributes(
