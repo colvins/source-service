@@ -15,7 +15,6 @@ import java.io.ByteArrayInputStream;
 import java.net.URLEncoder;
 import android.util.Base64;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -28,7 +27,7 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
     private SourceConfig config;
 
     private static final Gson GSON = new Gson();
-    private static final String TVBOX_BUILD_ID = "20260516-quark-kaiser-sdk25-split-1";
+    private static final String TVBOX_BUILD_ID = "20260516-quark-kaiser-8096-priority-clean-1";
     // proxy() 回调仍保留，用于非网盘资源的服务端代理场景
     private static final Map<String, PlayBundle.Candidate> PROXY_CACHE = new ConcurrentHashMap<>();
 
@@ -54,13 +53,6 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
     @Override
     public void destroy() {
     }
-
-    private final Map<String, PlayBundle> playCache = new LinkedHashMap<String, PlayBundle>() {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, PlayBundle> eldest) {
-            return size() > 32;
-        }
-    };
 
     @Override
     public String homeContent(boolean filter) throws Exception {
@@ -125,16 +117,13 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
                 playbackUrl = proxyUrl(token);
             }
             String kaiserUrl = buildKaiserUrl(playbackUrl, driveType);
-            String result = kaiserResult(kaiserUrl, preferred.headers(), bundle.message());
-            logDrivePlayback(flag, id, driveType, playbackUrl, kaiserUrl, preferred.headers(), result);
-            return result;
+            return kaiserResult(kaiserUrl, preferred.headers(), bundle.message());
         }
 
         if (isProxyFlag(flag)) {
             // 显式要求服务端代理（"服务端代理" flag）时走 proxy://
             PlayBundle.Candidate candidate = selectRawCandidate(bundle);
             if (candidate == null) candidate = bundle.candidates().get(0);
-            playCache.put(cacheKey(flag, id), new PlayBundle(java.util.Collections.singletonList(candidate), bundle.message()));
             String token = encodeProxyToken(config(), flag, id, 0);
             PROXY_CACHE.put(token, candidate);
             return "{\"parse\":0,\"url\":\"" + escape(proxyUrl(token)) + "\"}";
@@ -189,15 +178,6 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
         }
     }
 
-    private int sdkInt() {
-        try {
-            Class<?> versionClass = Class.forName("android.os.Build$VERSION");
-            return versionClass.getField("SDK_INT").getInt(null);
-        } catch (Throwable error) {
-            return 0;
-        }
-    }
-
     private boolean isPortOpen(String host, int port, int timeoutMs) {
         java.net.Socket socket = null;
         try {
@@ -216,13 +196,6 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
         }
     }
 
-
-    private String quarkProxyUrl(String url, Map<String, String> headers) throws Exception {
-        String encodedUrl = Base64.encodeToString(nullSafe(url).getBytes("UTF-8"), Base64.NO_WRAP);
-        String encodedHeader = Base64.encodeToString(serializeHeaderJson(headers).getBytes("UTF-8"), Base64.NO_WRAP);
-        return "proxy://do=quark&type=video&url=" + encode(encodedUrl) + "&header=" + encode(encodedHeader);
-    }
-
     /** 从 play_id 推断网盘类型（quark / baidu） */
     private String driveType(String id) {
         if (id != null && id.contains("pan.baidu.com/")) return "baidu";
@@ -237,35 +210,6 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
         if (!headers.isEmpty()) {
             builder.append(",\"header\":").append(serializeHeaderJson(headers));
         }
-        if (!isBlank(message)) {
-            builder.append(",\"msg\":\"").append(escape(message)).append("\"");
-        }
-        builder.append("}");
-        return builder.toString();
-    }
-
-    private void logDrivePlayback(String flag, String id, String driveType, String playbackUrl, String kaiserUrl, Map<String, String> headers, String result) {
-        try {
-            StringBuilder builder = new StringBuilder();
-            builder.append("sdk=").append(sdkInt());
-            builder.append(" driveType=").append(driveType);
-            builder.append(" flag=").append(nullSafe(flag));
-            builder.append(" idHash=").append(Integer.toHexString(nullSafe(id).hashCode()));
-            builder.append(" port8096=").append(isPortOpen("127.0.0.1", 8096, 100));
-            builder.append(" hostKaiser=").append(resolveHostKaiserBase());
-            builder.append(" playbackUrl=").append(playbackUrl);
-            builder.append(" kaiserUrl=").append(kaiserUrl);
-            builder.append(" headers=").append(serializeHeaderJson(headers));
-            builder.append(" result=").append(result);
-            System.out.println("ColvinsTV " + builder.toString());
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private String simpleUrlResult(String url, String message) {
-        StringBuilder builder = new StringBuilder();
-        builder.append("{\"parse\":0");
-        builder.append(",\"url\":\"").append(escape(url)).append("\"");
         if (!isBlank(message)) {
             builder.append(",\"msg\":\"").append(escape(message)).append("\"");
         }
@@ -467,10 +411,6 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
 
     private static String nullSafe(String value) {
         return value == null ? "" : value;
-    }
-
-    private String cacheKey(String flag, String id) {
-        return flag + "\n" + id;
     }
 
     private String encode(String value) {

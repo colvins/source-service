@@ -1,9 +1,10 @@
-__pycache__/
-*.py[cod]
+.git
 .DS_Store
 .env
 data/
-
+__pycache__/
+*.py[cod]
 *.bak*
+app/__pycache__/
 tvbox-jar/.gradle/
 tvbox-jar/build/

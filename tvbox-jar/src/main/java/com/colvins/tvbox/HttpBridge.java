@@ -1,11 +1,5 @@
 package com.colvins.tvbox;
 
-import com.google.gson.Gson;
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -22,8 +16,6 @@ import java.util.List;
 import java.util.Map;
 
 public final class HttpBridge {
-
-    private static final Gson GSON = new Gson();
 
     public static final class HttpResponse {
         private final int statusCode;
@@ -110,18 +102,6 @@ public final class HttpBridge {
         return new Object[]{status, isBlank(mimeType) ? "application/octet-stream" : mimeType, stream, headers};
     }
 
-    public static String encodePlayToken(String flag, String playId, int candidateIndex) {
-        return nullToEmpty(flag) + "\u0001" + nullToEmpty(playId) + "\u0001" + candidateIndex;
-    }
-
-    public static String[] decodePlayToken(String token) {
-        String[] parts = nullToEmpty(token).split("\u0001", 3);
-        if (parts.length != 3) {
-            throw new IllegalArgumentException("invalid play token");
-        }
-        return parts;
-    }
-
     private static Map<String, String> responseHeaders(HttpURLConnection connection) {
         Map<String, String> headers = new LinkedHashMap<>();
         for (Map.Entry<String, List<String>> entry : connection.getHeaderFields().entrySet()) {
@@ -181,16 +161,6 @@ public final class HttpBridge {
         } catch (Exception error) {
             throw new IllegalStateException("failed to encode value", error);
         }
-    }
-
-    private static String safeString(JsonElement element) {
-        return element == null || element.isJsonNull() ? "" : element.getAsString();
-    }
-
-    private static String getOrEmpty(Map<String, String> values, String key) {
-        if (values == null || key == null) return "";
-        String value = values.get(key);
-        return value == null ? "" : value;
     }
 
     private static String getHeaderIgnoreCase(Map<String, String> values, String key) {

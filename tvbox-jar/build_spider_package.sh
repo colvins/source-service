@@ -15,7 +15,7 @@ rm -rf /tmp/colvins-stage /tmp/colvins-dex /tmp/colvins-program.jar /tmp/MANIFES
 mkdir -p /tmp/colvins-stage /tmp/colvins-dex
 cp -R build/classes/java/main/com /tmp/colvins-stage/
 cp -R build/classes/java/stub/android /tmp/colvins-stage/
-GSON_JAR=$(find /home/gradle/.gradle /root/.gradle -path '*com.google.code.gson/gson/*/*.jar' 2>/dev/null | head -n 1)
+GSON_JAR=$({ find /root/.gradle /home/gradle/.gradle -path '*com.google.code.gson/gson/*/*.jar' 2>/dev/null || true; } | head -n 1)
 if [ -z "$GSON_JAR" ]; then
   echo 'gson jar not found in gradle cache' >&2
   exit 1

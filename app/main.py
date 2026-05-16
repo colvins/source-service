@@ -1206,22 +1206,6 @@ def update_setting_form(key: str = Form(...), value: str = Form("")):
     return RedirectResponse(url="/#settings", status_code=303)
 
 
-@app.get("/drive-test", response_class=HTMLResponse)
-def drive_test_page(provider: str = "quark", shareURL: str = ""):
-    if not shareURL:
-        return HTMLResponse("<pre>Missing shareURL.</pre>", status_code=400)
-    try:
-        result = drive_share_play_best(
-            provider,
-            DriveVideosPayload(shareURL=shareURL, recursive=True, maxDepth=3, maxItems=80),
-        )
-        body = json.dumps(result, ensure_ascii=False, indent=2)
-        return HTMLResponse(f"<pre>{body}</pre>")
-    except Exception as error:
-        body = json.dumps({"error": str(error)}, ensure_ascii=False, indent=2)
-        return HTMLResponse(f"<pre>{body}</pre>", status_code=500)
-
-
 @app.get("/api/admin/sources")
 def list_sources():
     with get_conn() as conn:
