@@ -80,6 +80,13 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    # 预热常驻 node 运行时，消除第一次请求的冷启动延迟
+    try:
+        from .runtime import _ensure_node_runtime
+        _ensure_node_runtime()
+    except Exception as e:
+        import logging
+        logging.warning(f"node runtime prestart failed: {e}")
 
 
 def _cache_get(cache: dict[Any, tuple[float, Any]], key: Any) -> Any | None:
