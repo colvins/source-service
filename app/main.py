@@ -63,7 +63,7 @@ DRIVE_PARSE_CACHE_TTL_SECONDS = 300
 DRIVE_FILES_CACHE_TTL_SECONDS = 1800
 TVBOX_HOME_CACHE_TTL_SECONDS = 300
 TVBOX_CATEGORY_CACHE_TTL_SECONDS = 60
-TVBOX_DETAIL_CACHE_TTL_SECONDS = 900
+TVBOX_DETAIL_CACHE_TTL_SECONDS = 7200
 TVBOX_DRIVE_PLAY_CACHE_TTL_SECONDS = 900
 TVBOX_DRIVE_FILE_INFO_CACHE_TTL_SECONDS = 1800
 _drive_parse_cache: dict[tuple[str, str], tuple[float, Any]] = {}
@@ -252,42 +252,12 @@ def _quark_saved_fids_from_task(client: QuarkClient, save: dict[str, Any]) -> li
 
 def _quark_play_candidates_for_saved_fid(client: QuarkClient, saved_fid: str, fallback_name: str) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
     headers = client.play_headers()
-    video_play: dict[str, Any] = {'colvins': {}}
-    video_error = ""
     try:
-        video_play, headers = client.video_play_urls(saved_fid)
+        raw_url = client.download_url(saved_fid)
     except QuarkNativeError as error:
-        video_error = str(error)[:240]
-        video_play.setdefault('colvins', {})['videoPlayError'] = video_error
-
-    play_candidates: list[dict[str, Any]] = []
-    try:
-        play_candidates.append(
-            {
-                'name': 'raw',
-                'url': client.download_url(saved_fid),
-                'header': headers,
-            }
-        )
-    except QuarkNativeError as error:
-        video_play.setdefault('colvins', {})['rawError'] = str(error)[:240]
-
-    video_data = video_play.get('data') or {}
-    video_items = video_data.get('video_list') or video_data.get('videoList') or []
-    for item in video_items:
-        if isinstance(item, dict):
-            video_info = item.get('video_info') if isinstance(item.get('video_info'), dict) else {}
-            play_candidates.append(
-                {
-                    'name': item.get('quality') or item.get('resolution') or item.get('format') or fallback_name or 'transcoded',
-                    'url': item.get('url') or video_info.get('url') or '',
-                    'header': headers,
-                }
-            )
-
-    if not play_candidates and video_error:
-        raise QuarkNativeError(video_error)
-    return play_candidates, headers, video_play
+        raise QuarkNativeError(f"Quark raw download URL failed: {error}") from error
+    play_candidates = [{"name": "raw", "url": raw_url, "header": headers}]
+    return play_candidates, headers, {}
 
 
 def _quark_cached_saved_fid(provider: str, share_id: str, share_fid: str, file_path: str) -> str:
@@ -1811,6 +1781,14 @@ def drive_share_play(provider: str, payload: DrivePlayPayload):
                         }
                     except QuarkNativeError as error:
                         cached_error = str(error)[:240]
+                        try:
+                            with get_conn() as del_conn:
+                                del_conn.execute(
+                                    "DELETE FROM drive_file_cache WHERE provider=? AND share_id=? AND share_fid=?",
+                                    (provider, parsed["shareId"], payload.fid),
+                                )
+                        except Exception:
+                            pass
                 save_dir_fid = _quark_ensure_save_dir(client)
                 existing_fid = _quark_find_existing_saved_fid(client, payload.filePath)
                 if existing_fid:
@@ -2388,10 +2366,13 @@ def runtime_tvbox_play(source_id: int, request: Request, flag: str = "", id: str
 @app.get("/api/tvbox/source/{source_id}/play-options")
 def runtime_tvbox_play_options(source_id: int, request: Request, flag: str = "", id: str = "", playId: str = "", play: str = ""):
     resolved_play_id = _tvbox_unwrap_play_id(play or playId or id)
+
     if "|colvins:" in resolved_play_id and ("pan.quark.cn/" in resolved_play_id or "pan.baidu.com/" in resolved_play_id):
         fallback = _tvbox_drive_play_fallback(flag, resolved_play_id)
         if fallback is not None:
             return JSONResponse(_tvbox_play_options(fallback))
+        return JSONResponse({"candidates": [], "message": "网盘播放地址解析失败，请检查网盘账号是否已配置"})
+
     with get_conn() as conn:
         payload = execute_source(
             conn,

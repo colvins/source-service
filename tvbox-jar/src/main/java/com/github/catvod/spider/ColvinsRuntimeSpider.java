@@ -30,6 +30,7 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
     private static final String TVBOX_BUILD_ID = "20260516-quark-kaiser-8096-priority-clean-1";
     // proxy() 回调仍保留，用于非网盘资源的服务端代理场景
     private static final Map<String, PlayBundle.Candidate> PROXY_CACHE = new ConcurrentHashMap<>();
+    private static volatile String KAISER_BASE_URL_CACHE = null;
 
     public ColvinsRuntimeSpider(String entryClassName) {
         this.entryClassName = entryClassName == null ? "" : entryClassName;
@@ -157,12 +158,16 @@ public class ColvinsRuntimeSpider extends com.github.catvod.crawler.Spider {
     }
 
     private String resolveKaiserBaseUrl() {
+        if (KAISER_BASE_URL_CACHE != null) return KAISER_BASE_URL_CACHE;
+        String resolved;
         if (isPortOpen("127.0.0.1", 8096, 150)) {
-            return "http://127.0.0.1:8096/kaiser";
+            resolved = "http://127.0.0.1:8096/kaiser";
+        } else {
+            String hostBase = resolveHostKaiserBase();
+            resolved = isBlank(hostBase) ? "http://127.0.0.1:8096/kaiser" : hostBase;
         }
-        String hostBase = resolveHostKaiserBase();
-        if (!isBlank(hostBase)) return hostBase;
-        return "http://127.0.0.1:8096/kaiser";
+        KAISER_BASE_URL_CACHE = resolved;
+        return resolved;
     }
 
     private String resolveHostKaiserBase() {
